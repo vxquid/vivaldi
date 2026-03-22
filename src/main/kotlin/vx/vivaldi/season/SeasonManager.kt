@@ -1,8 +1,31 @@
 package vx.vivaldi.season
 
 import org.bukkit.Bukkit
+import org.bukkit.event.Event
+import org.bukkit.event.HandlerList
+import org.bukkit.potion.PotionEffect
+import org.bukkit.potion.PotionEffectType
 import org.bukkit.scheduler.BukkitRunnable
 import vx.vivaldi.Vivaldi
+
+// Helper enum representation of Seasons
+enum class Season {
+    SPRING, SUMMER, AUTUMN, WINTER;
+
+    fun next(): Season {
+        val nextOrdinal = (this.ordinal + 1) % entries.size
+        return entries[nextOrdinal]
+    }
+}
+
+// Bukkit Event for developers listening to Season Changes
+class SeasonChangeEvent(val oldSeason: Season, val newSeason: Season) : Event() {
+    companion object {
+        @JvmStatic
+        val handlerList = HandlerList()
+    }
+    override fun getHandlers(): HandlerList = handlerList
+}
 
 class SeasonManager(private val plugin: Vivaldi) {
 
@@ -61,26 +84,69 @@ class SeasonManager(private val plugin: Vivaldi) {
     }
 
     /**
-     * Updates visual colors for players already online.
+     * Updates visual colors for players already online by forcing a chunk refresh.
      */
     private fun updatePlayersForNewSeason() {
-        /*
-         * CRITICAL NOTE ON 1.20.5+ ARCHITECTURE:
-         * Registry Data (Biome Colors) is ONLY sent during the Configuration Phase.
-         * To apply the new seasonal colors to players currently playing, we must transition
-         * them back to the Configuration Phase, resend the registry, and return them to Play Phase.
-         */
-
         for (player in Bukkit.getOnlinePlayers()) {
+            player.sendMessage("§7The environment shifts around you as the new season begins...")
 
-            // FIXME: Transition the player to Configuration Phase and back.
-            // Using PacketEvents or Paper API to send ClientboundStartConfigurationPacket.
-            // This forces the client to re-download the Registry Packet (intercepted by our BiomeRegistryInterceptor)
-            // and then forces chunks to redraw with new seasonal colors.
+            // Накладываем эффект слепоты на 3 секунды.
+            // Это скроет мерцание чанков при их перезагрузке и создаст крутой эффект смены сезона.
+            player.addPotionEffect(PotionEffect(PotionEffectType.BLINDNESS, 60, 1, false, false, false))
 
-            // Temporarily (until we write the Configuration phase transition logic),
-            // you can just notify them to relog if they want to see the new season:
-            player.sendMessage("§7Please re-login to synchronize seasonal visual changes.")
+            // Получаем радиус прорисовки (берем наименьшее между серверным и клиентским)
+            val viewDistance = player.clientViewDistance.coerceAtMost(Bukkit.getViewDistance())
+            val centerChunk = player.location.chunk
+            val cx = centerChunk.x
+            val cz = centerChunk.z
+            val world = player.world
+
+            val chunksToRefresh = mutableListOf<Pair<Int, Int>>()
+
+            // Собираем все чанки вокруг игрока
+            for (x in cx - viewDistance..cx + viewDistance) {
+                for (z in cz - viewDistance..cz + viewDistance) {
+                    chunksToRefresh.add(Pair(x, z))
+                }
+            }
+
+            // Сортируем так, чтобы чанки ближе к игроку обновлялись в первую очередь
+            chunksToRefresh.sortBy { (x, z) ->
+                val dx = x - cx
+                val dz = z - cz
+                dx * dx + dz * dz
+            }
+
+            // Растягиваем обновление чанков во времени (staggering),
+            // чтобы сервер не завис от массовой генерации пакетов.
+            object : BukkitRunnable() {
+                var index = 0
+                val chunksPerTick = 15 // Обновляем по 15 чанков за тик для каждого игрока
+
+                override fun run() {
+                    // Если игрок вышел — прекращаем обновление для него
+                    if (!player.isOnline) {
+                        cancel()
+                        return
+                    }
+
+                    for (i in 0 until chunksPerTick) {
+                        if (index >= chunksToRefresh.size) {
+                            cancel()
+                            return
+                        }
+
+                        val (x, z) = chunksToRefresh[index]
+
+                        // Метод помечен как @Deprecated, но это единственный "чистый" метод в Bukkit
+                        // без использования NMS, который принудительно заставляет сервер отправить
+                        // пакет CHUNK_DATA игроку заново. Пакет пройдет через наш PacketEvents-перехватчик!
+                        world.refreshChunk(x, z)
+
+                        index++
+                    }
+                }
+            }.runTaskTimer(plugin, 1L, 1L)
         }
     }
 }

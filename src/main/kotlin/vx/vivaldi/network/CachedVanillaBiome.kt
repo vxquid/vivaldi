@@ -13,8 +13,10 @@ import com.github.retrooper.packetevents.wrapper.configuration.server.WrapperCon
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData
 import io.github.retrooper.packetevents.util.SpigotConversionUtil
 import vx.vivaldi.Vivaldi.Companion.plugin
+import vx.vivaldi.season.Season
 import vx.vivaldi.season.biome.BiomeColorPalette
 import java.lang.reflect.Field
+import java.util.concurrent.ConcurrentHashMap
 
 data class CachedVanillaBiome(
     val namespace: String,
@@ -31,16 +33,16 @@ data class CachedVanillaBiome(
 
 object BiomeRegistryInterceptor : PacketListener {
 
-    val vanillaBiomesCache = mutableMapOf<String, CachedVanillaBiome>()
+    val vanillaBiomesCache = ConcurrentHashMap<String, CachedVanillaBiome>()
 
-    // Maps [Original Biome Network ID] -> [Alternate Fake Biome Network ID]
-    private val alternateBiomeIdMap = mutableMapOf<Int, Int>()
+    // Maps [Vanilla Biome Network ID] ->[Season -> Seasonal Normal Biome Network ID]
+    private val vanillaToSeasonalNormalMap = ConcurrentHashMap<Int, Map<Season, Int>>()
 
-    // Хранит ID всех альтернативных биомов для быстрой проверки O(1)
-    private val alternateBiomeIds = mutableSetOf<Int>()
+    // Maps [Seasonal Normal Biome Network ID] -> [Seasonal Alternate Biome Network ID]
+    private val normalToAlternateBiomeMap = ConcurrentHashMap<Int, Int>()
 
     // Maps hardcoded leaf block state IDs (Birch/Spruce) to Oak leaf block state IDs
-    private val leafReplacementMap = mutableMapOf<Int, Int>()
+    private val leafReplacementMap = ConcurrentHashMap<Int, Int>()
 
     private val nbtFloatValueField: Field by lazy {
         NBTFloat::class.java.getDeclaredField("value").apply { isAccessible = true }
@@ -109,82 +111,73 @@ object BiomeRegistryInterceptor : PacketListener {
                 val newElements = mutableListOf<WrapperConfigServerRegistryData.RegistryElement>()
 
                 var injectedCount = 0
-                val keyToOriginalId = mutableMapOf<String, Int>()
+                val tempVanillaToSeasonal = mutableMapOf<Int, Map<Season, Int>>()
+                val tempNormalToAlternate = mutableMapOf<Int, Int>()
 
-                // First Pass
                 for (i in elements.indices) {
                     val element = elements[i]
                     val biomeKey = element.id.toString()
-                    var nbt = element.data as? NBTCompound
+                    val nbt = element.data as? NBTCompound
 
+                    // Cache vanilla attributes for fallback if needed
                     if (nbt != null && !vanillaBiomesCache.containsKey(biomeKey)) {
                         extractAndCacheBiomeData(biomeKey, nbt)
                     }
 
-                    keyToOriginalId[biomeKey] = i
+                    // Extract "plains" from "minecraft:plains"
+                    val rawName = (if (biomeKey.contains(":")) biomeKey.split(":")[1] else biomeKey).lowercase()
+                    val seasonMap = mutableMapOf<Season, Int>()
 
-                    val activePalette = plugin.seasonalBiomeManager.getActivePaletteFor(biomeKey)
-                    if (activePalette != null) {
-                        var effects: NBTCompound? = null
+                    // Внедряем ВСЕ сезоны в реестр за раз
+                    for (season in Season.entries) {
+                        val seasonName = season.name.lowercase()
+                        val normalPalette = plugin.seasonalBiomeManager.getActivePaletteFor(biomeKey, season)
+                        val altPalette = plugin.seasonalBiomeManager.getAlternatePaletteFor(biomeKey, season)
 
-                        if (nbt == null) {
-                            nbt = NBTCompound()
-                            nbt.setTag("has_precipitation", NBTByte(1.toByte()))
-                            nbt.setTag("temperature", NBTFloat(0.5f))
-                            nbt.setTag("downfall", NBTFloat(0.5f))
+                        if (normalPalette != null && altPalette != null) {
+                            val normalKey = "vivaldi:${seasonName}_$rawName"
+                            val altKey = "vivaldi:${seasonName}_${rawName}_alt"
 
-                            effects = NBTCompound()
-                            nbt.setTag("effects", effects)
+                            // Create Normal Seasonal Biome NBT
+                            val normalNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
+                            val normalEffects = getOrCreateEffects(normalNbt)
+                            injectColors(normalEffects, normalPalette)
 
-                            elements[i] = WrapperConfigServerRegistryData.RegistryElement(element.id, nbt)
-                        } else {
-                            effects = getTagSafe(nbt, "effects") as? NBTCompound
-                            if (effects == null) {
-                                effects = NBTCompound()
-                                nbt.setTag("effects", effects)
-                            }
+                            // Create Alternate Seasonal Biome NBT
+                            val altNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
+                            val altEffects = getOrCreateEffects(altNbt)
+                            injectColors(altEffects, altPalette)
+
+                            // Note: we DO NOT modify original element! We just add our virtual elements.
+                            newElements.add(WrapperConfigServerRegistryData.RegistryElement(ResourceLocation(normalKey), normalNbt))
+                            newElements.add(WrapperConfigServerRegistryData.RegistryElement(ResourceLocation(altKey), altNbt))
+
+                            val normalId = elements.size + newElements.size - 2
+                            val altId = elements.size + newElements.size - 1
+
+                            seasonMap[season] = normalId
+                            tempNormalToAlternate[normalId] = altId
+                            injectedCount += 2
                         }
+                    }
 
-                        injectColors(effects, activePalette)
-                        injectedCount++
+                    if (seasonMap.isNotEmpty()) {
+                        tempVanillaToSeasonal[i] = seasonMap
                     }
                 }
 
-                // Second Pass
-                for (i in elements.indices) {
-                    val element = elements[i]
-                    val biomeKey = element.id.toString()
-                    val nbt = element.data as? NBTCompound ?: continue
-
-                    val altPalette = plugin.seasonalBiomeManager.getAlternatePaletteFor(biomeKey) ?: continue
-
-                    val altKey = if (biomeKey.contains(":")) {
-                        val split = biomeKey.split(":")
-                        "${split[0]}:${split[1]}_alt"
-                    } else {
-                        "${biomeKey}_alt"
-                    }
-
-                    val altNbt = cloneBiomeNbt(nbt)
-                    val effects = getTagSafe(altNbt, "effects") as? NBTCompound
-                    if (effects != null) {
-                        injectColors(effects, altPalette)
-                    }
-
-                    val altElement = WrapperConfigServerRegistryData.RegistryElement(ResourceLocation(altKey), altNbt)
-                    newElements.add(altElement)
-
-                    val originalId = keyToOriginalId[biomeKey]!!
-                    val altId = elements.size + newElements.size - 1
-
-                    alternateBiomeIdMap[originalId] = altId
-                    alternateBiomeIds.add(altId) // Сохраняем ID для быстрой проверки!
-                }
-
+                // Add virtual biomes to registry array
                 elements.addAll(newElements)
                 wrapper.elements = elements
 
-                plugin.logger.info("§a[Vivaldi] Injected $injectedCount colors. Generated ${newElements.size} virtual alternate biomes.")
+                // Safely apply new mapping table
+                vanillaToSeasonalNormalMap.clear()
+                vanillaToSeasonalNormalMap.putAll(tempVanillaToSeasonal)
+
+                normalToAlternateBiomeMap.clear()
+                normalToAlternateBiomeMap.putAll(tempNormalToAlternate)
+
+                plugin.logger.info("§a[Vivaldi] Appended $injectedCount virtual seasonal biomes for ALL seasons.")
             }
         } catch (e: Exception) {
             plugin.logger.severe("§c[Vivaldi] Exception while processing REGISTRY_DATA: ${e.message}")
@@ -193,19 +186,39 @@ object BiomeRegistryInterceptor : PacketListener {
 
     private fun handleChunkData(event: PacketSendEvent) {
         if (leafReplacementMap.isEmpty()) buildLeafMappings()
-        if (alternateBiomeIdMap.isEmpty() || leafReplacementMap.isEmpty()) return
+        if (vanillaToSeasonalNormalMap.isEmpty()) return
 
         try {
             val wrapper = WrapperPlayServerChunkData(event)
             val chunks = wrapper.column.chunks
             var modified = false
 
+            // Динамически берем текущий сезон
+            val currentSeason = plugin.seasonManager.currentSeason
+
             for (i in chunks.indices) {
                 val chunk = chunks[i] ?: continue
 
+                // chunk represents a 16x16x16 section in 1.18+
                 if (chunk is Chunk_v1_18) {
                     val biomeData = chunk.biomeData
 
+                    // PASS 1: Sweep the section and convert all Vanilla Biomes to Seasonal Normal Biomes.
+                    for (bx in 0..3) {
+                        for (by in 0..3) {
+                            for (bz in 0..3) {
+                                val currentBiomeId = biomeData.get(bx, by, bz)
+                                // Ищем ID текущего сезона
+                                val normalId = vanillaToSeasonalNormalMap[currentBiomeId]?.get(currentSeason)
+                                if (normalId != null) {
+                                    biomeData.set(bx, by, bz, normalId)
+                                    modified = true
+                                }
+                            }
+                        }
+                    }
+
+                    // PASS 2: Block Sweep. If we find target leaves, we change them and set local biome to Alternate.
                     for (bx in 0..15) {
                         for (by in 0..15) {
                             for (bz in 0..15) {
@@ -213,23 +226,19 @@ object BiomeRegistryInterceptor : PacketListener {
                                 val replacementStateId = leafReplacementMap[currentStateId.globalId]
 
                                 if (replacementStateId != null) {
+                                    chunk.set(bx, by, bz, replacementStateId)
+                                    modified = true
+
                                     val biomeX = bx / 4
                                     val biomeY = by / 4
                                     val biomeZ = bz / 4
 
                                     val currentBiomeId = biomeData.get(biomeX, biomeY, biomeZ)
-                                    val altBiomeId = alternateBiomeIdMap[currentBiomeId]
+                                    // Notice: Because of PASS 1, currentBiomeId is likely the Normal Seasonal Biome now.
+                                    val altBiomeId = normalToAlternateBiomeMap[currentBiomeId]
 
                                     if (altBiomeId != null) {
-                                        // Биом оригинальный. Заменяем блок и меняем биом на альтернативный
-                                        chunk.set(bx, by, bz, replacementStateId)
                                         biomeData.set(biomeX, biomeY, biomeZ, altBiomeId)
-                                        modified = true
-                                    } else if (alternateBiomeIds.contains(currentBiomeId)) {
-                                        // Биом УЖЕ был изменен на альтернативный другим блоком листвы в этой зоне 4x4x4.
-                                        // Просто меняем сам блок листвы на дубовый, чтобы дерево стало цельным.
-                                        chunk.set(bx, by, bz, replacementStateId)
-                                        modified = true
                                     }
                                 }
                             }
@@ -242,8 +251,26 @@ object BiomeRegistryInterceptor : PacketListener {
                 event.markForReEncode(true)
             }
         } catch (e: Exception) {
-            // Silently catch
+            // Silently catch to avoid spam on bad chunks
         }
+    }
+
+    private fun createDefaultBiomeNbt(): NBTCompound {
+        val nbt = NBTCompound()
+        nbt.setTag("has_precipitation", NBTByte(1.toByte()))
+        nbt.setTag("temperature", NBTFloat(0.5f))
+        nbt.setTag("downfall", NBTFloat(0.5f))
+        nbt.setTag("effects", NBTCompound())
+        return nbt
+    }
+
+    private fun getOrCreateEffects(nbt: NBTCompound): NBTCompound {
+        var effects = getTagSafe(nbt, "effects") as? NBTCompound
+        if (effects == null) {
+            effects = NBTCompound()
+            nbt.setTag("effects", effects)
+        }
+        return effects
     }
 
     private fun cloneBiomeNbt(original: NBTCompound): NBTCompound {
@@ -256,7 +283,7 @@ object BiomeRegistryInterceptor : PacketListener {
                 }
                 clone.setTag("effects", effectsClone)
             } else {
-                clone.setTag(key, tag)
+                clone.setTag(key, tag) // Shallow copy for standard primitive tags
             }
         }
         return clone

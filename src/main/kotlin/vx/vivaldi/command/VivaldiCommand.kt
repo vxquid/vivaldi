@@ -20,6 +20,7 @@ import vx.vivaldi.config.ProviderConfiguration.ProviderType
 import vx.vivaldi.config.lib.ConfigurationManager
 import vx.vivaldi.network.BiomeRegistryInterceptor
 import vx.vivaldi.network.CachedVanillaBiome
+import vx.vivaldi.season.Season
 import vx.vivaldi.season.biome.BiomeGenerationController
 import vx.vivaldi.season.biome.GeneratedBiomeContainer
 import java.io.File
@@ -41,9 +42,17 @@ class VivaldiCommand : BaseCommand(), Listener {
 
     init {
         plugin.server.pluginManager.registerEvents(this, plugin)
+
+        // Автокомплит для провайдеров
         plugin.commandManager.commandCompletions.registerCompletion("providers") {
             ProviderType.entries.map { it.name }
         }
+
+        // Автокомплит для сезонов
+        plugin.commandManager.commandCompletions.registerCompletion("seasons") {
+            Season.entries.map { it.name }
+        }
+
         if (!biomesFolder.exists()) biomesFolder.mkdirs()
     }
 
@@ -74,6 +83,46 @@ class VivaldiCommand : BaseCommand(), Listener {
         const val MSG_DONATE_2 = "§7via Ko-fi if you enjoy the plugin:"
         const val MSG_DONATE_LINK = "§b➤ https://ko-fi.com/vxquid"
     }
+
+    // --- SEASON MANAGEMENT ---
+
+    @Subcommand("season info")
+    @CommandPermission("vivaldi.admin.season")
+    fun onSeasonInfo(player: Player) {
+        val current = plugin.seasonManager.currentSeason
+        player.sendFormattedMessage("§a[Vivaldi] Current active season is: §6${current.name}")
+    }
+
+    @Subcommand("season set")
+    @CommandPermission("vivaldi.admin.season")
+    @CommandCompletion("@seasons")
+    fun onSeasonSet(player: Player, @Values("@seasons") seasonName: String) {
+        val season = try {
+            Season.valueOf(seasonName.uppercase())
+        } catch (_: Exception) {
+            player.sendFormattedMessage("§cInvalid season! Available: §e${Season.entries.joinToString { it.name }}")
+            return
+        }
+
+        if (plugin.seasonManager.currentSeason == season) {
+            player.sendFormattedMessage("§cThe season is already set to ${season.name}!")
+            return
+        }
+
+        player.sendFormattedMessage("§a[Vivaldi] Forcefully changing season to §6${season.name}§a...")
+        plugin.seasonManager.setSeason(season)
+    }
+
+    @Subcommand("season next")
+    @CommandPermission("vivaldi.admin.season")
+    fun onSeasonNext(player: Player) {
+        val nextSeason = plugin.seasonManager.currentSeason.next()
+        player.sendFormattedMessage("§a[Vivaldi] Advancing to the next season: §6${nextSeason.name}§a...")
+        plugin.seasonManager.setSeason(nextSeason)
+    }
+
+
+    // --- SETUP LOGIC ---
 
     @Subcommand("setup")
     @CommandPermission("vivaldi.admin.setup")

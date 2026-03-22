@@ -2,6 +2,7 @@ package vx.vivaldi.season.biome
 
 import vx.vivaldi.Vivaldi.Companion.gson
 import vx.vivaldi.Vivaldi.Companion.plugin
+import vx.vivaldi.season.Season
 import java.io.File
 
 /**
@@ -41,44 +42,36 @@ class SeasonalBiomeManager {
     }
 
     /**
-     * Retrieves the NORMAL color palette for a specific biome based on the current active season.
+     * Retrieves the NORMAL color palette for a specific biome based on the provided season.
      *
      * @param fullKey The full namespaced key (e.g., "minecraft:plains")
+     * @param season The season to retrieve the palette for
      * @return The normal color palette, or null if no generated data exists for this biome
      */
-    fun getActivePaletteFor(fullKey: String): BiomeColorPalette? {
+    fun getActivePaletteFor(fullKey: String, season: Season): BiomeColorPalette? {
         val container = seasonalBiomes[fullKey] ?: return null
-
-        // TODO: Replace this with your actual Season/Gameplay manager logic!
-        val currentSeasonName = "AUTUMN" // Hardcoded for testing
-
-        return when (currentSeasonName) {
-            "SPRING" -> container.spring.normal
-            "SUMMER" -> container.summer.normal
-            "AUTUMN" -> container.autumn.normal
-            "WINTER" -> container.winter.normal
-            else -> null
+        return when (season) {
+            Season.SPRING -> container.spring.normal
+            Season.SUMMER -> container.summer.normal
+            Season.AUTUMN -> container.autumn.normal
+            Season.WINTER -> container.winter.normal
         }
     }
 
     /**
-     * Retrieves the ALTERNATE color palette for a specific biome based on the current active season.
+     * Retrieves the ALTERNATE color palette for a specific biome based on the provided season.
      *
      * @param fullKey The full namespaced key (e.g., "minecraft:plains")
+     * @param season The season to retrieve the palette for
      * @return The alternate color palette, or null if no generated data exists for this biome
      */
-    fun getAlternatePaletteFor(fullKey: String): BiomeColorPalette? {
+    fun getAlternatePaletteFor(fullKey: String, season: Season): BiomeColorPalette? {
         val container = seasonalBiomes[fullKey] ?: return null
-
-        // TODO: Replace this with your actual Season/Gameplay manager logic!
-        val currentSeasonName = "AUTUMN" // Hardcoded for testing
-
-        return when (currentSeasonName) {
-            "SPRING" -> container.spring.alternate
-            "SUMMER" -> container.summer.alternate
-            "AUTUMN" -> container.autumn.alternate
-            "WINTER" -> container.winter.alternate
-            else -> null
+        return when (season) {
+            Season.SPRING -> container.spring.alternate
+            Season.SUMMER -> container.summer.alternate
+            Season.AUTUMN -> container.autumn.alternate
+            Season.WINTER -> container.winter.alternate
         }
     }
 }
