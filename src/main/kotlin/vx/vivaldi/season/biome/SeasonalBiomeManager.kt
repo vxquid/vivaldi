@@ -41,13 +41,6 @@ class SeasonalBiomeManager {
         plugin.logger.info("§a[Vivaldi] Successfully loaded ${seasonalBiomes.size} seasonal biomes into memory.")
     }
 
-    /**
-     * Retrieves the NORMAL color palette for a specific biome based on the provided season.
-     *
-     * @param fullKey The full namespaced key (e.g., "minecraft:plains")
-     * @param season The season to retrieve the palette for
-     * @return The normal color palette, or null if no generated data exists for this biome
-     */
     fun getActivePaletteFor(fullKey: String, season: Season): BiomeColorPalette? {
         val container = seasonalBiomes[fullKey] ?: return null
         return when (season) {
@@ -58,13 +51,6 @@ class SeasonalBiomeManager {
         }
     }
 
-    /**
-     * Retrieves the ALTERNATE color palette for a specific biome based on the provided season.
-     *
-     * @param fullKey The full namespaced key (e.g., "minecraft:plains")
-     * @param season The season to retrieve the palette for
-     * @return The alternate color palette, or null if no generated data exists for this biome
-     */
     fun getAlternatePaletteFor(fullKey: String, season: Season): BiomeColorPalette? {
         val container = seasonalBiomes[fullKey] ?: return null
         return when (season) {

@@ -12,6 +12,7 @@ import vx.vivaldi.gameplay.GameplayManager
 import vx.vivaldi.network.BiomeRegistryInterceptor
 import vx.vivaldi.season.SeasonManager
 import vx.vivaldi.season.biome.SeasonalBiomeManager
+
 import java.io.File
 
 class Vivaldi : JavaPlugin() {

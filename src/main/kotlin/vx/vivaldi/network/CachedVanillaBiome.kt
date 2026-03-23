@@ -17,6 +17,8 @@ import vx.vivaldi.season.Season
 import vx.vivaldi.season.biome.BiomeColorPalette
 import java.lang.reflect.Field
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.max
+import kotlin.math.min
 
 data class CachedVanillaBiome(
     val namespace: String,
@@ -35,13 +37,8 @@ object BiomeRegistryInterceptor : PacketListener {
 
     val vanillaBiomesCache = ConcurrentHashMap<String, CachedVanillaBiome>()
 
-    // Maps [Vanilla Biome Network ID] ->[Season -> Seasonal Normal Biome Network ID]
     private val vanillaToSeasonalNormalMap = ConcurrentHashMap<Int, Map<Season, Int>>()
-
-    // Maps [Seasonal Normal Biome Network ID] -> [Seasonal Alternate Biome Network ID]
     private val normalToAlternateBiomeMap = ConcurrentHashMap<Int, Int>()
-
-    // Maps hardcoded leaf block state IDs (Birch/Spruce) to Oak leaf block state IDs
     private val leafReplacementMap = ConcurrentHashMap<Int, Int>()
 
     private val nbtFloatValueField: Field by lazy {
@@ -65,7 +62,6 @@ object BiomeRegistryInterceptor : PacketListener {
                 for (distance in 1..7) {
                     for (persistent in listOf(true, false)) {
                         for (waterlogged in listOf(true, false)) {
-
                             val sourceData = org.bukkit.Bukkit.createBlockData(sourceMat) as org.bukkit.block.data.type.Leaves
                             sourceData.distance = distance
                             sourceData.isPersistent = persistent
@@ -119,16 +115,13 @@ object BiomeRegistryInterceptor : PacketListener {
                     val biomeKey = element.id.toString()
                     val nbt = element.data as? NBTCompound
 
-                    // Cache vanilla attributes for fallback if needed
                     if (nbt != null && !vanillaBiomesCache.containsKey(biomeKey)) {
                         extractAndCacheBiomeData(biomeKey, nbt)
                     }
 
-                    // Extract "plains" from "minecraft:plains"
                     val rawName = (if (biomeKey.contains(":")) biomeKey.split(":")[1] else biomeKey).lowercase()
                     val seasonMap = mutableMapOf<Season, Int>()
 
-                    // Внедряем ВСЕ сезоны в реестр за раз
                     for (season in Season.entries) {
                         val seasonName = season.name.lowercase()
                         val normalPalette = plugin.seasonalBiomeManager.getActivePaletteFor(biomeKey, season)
@@ -138,17 +131,14 @@ object BiomeRegistryInterceptor : PacketListener {
                             val normalKey = "vivaldi:${seasonName}_$rawName"
                             val altKey = "vivaldi:${seasonName}_${rawName}_alt"
 
-                            // Create Normal Seasonal Biome NBT
                             val normalNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
                             val normalEffects = getOrCreateEffects(normalNbt)
                             injectColors(normalEffects, normalPalette)
 
-                            // Create Alternate Seasonal Biome NBT
                             val altNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
                             val altEffects = getOrCreateEffects(altNbt)
                             injectColors(altEffects, altPalette)
 
-                            // Note: we DO NOT modify original element! We just add our virtual elements.
                             newElements.add(WrapperConfigServerRegistryData.RegistryElement(ResourceLocation(normalKey), normalNbt))
                             newElements.add(WrapperConfigServerRegistryData.RegistryElement(ResourceLocation(altKey), altNbt))
 
@@ -166,11 +156,9 @@ object BiomeRegistryInterceptor : PacketListener {
                     }
                 }
 
-                // Add virtual biomes to registry array
                 elements.addAll(newElements)
                 wrapper.elements = elements
 
-                // Safely apply new mapping table
                 vanillaToSeasonalNormalMap.clear()
                 vanillaToSeasonalNormalMap.putAll(tempVanillaToSeasonal)
 
@@ -193,56 +181,113 @@ object BiomeRegistryInterceptor : PacketListener {
             val chunks = wrapper.column.chunks
             var modified = false
 
-            // Динамически берем текущий сезон
+            // Быстрый скан верхней границы
+            var highestSection = -1
+            for (i in chunks.indices.reversed()) {
+                val chunk = chunks[i]
+                if (chunk is Chunk_v1_18) {
+                    var hasBlocks = false
+                    scan@ for (by in 15 downTo 0) {
+                        for (bx in 0..15) {
+                            for (bz in 0..15) {
+                                if (chunk.get(bx, by, bz).globalId != 0) {
+                                    hasBlocks = true
+                                    break@scan
+                                }
+                            }
+                        }
+                    }
+                    if (hasBlocks) {
+                        highestSection = i
+                        break
+                    }
+                }
+            }
+
+            if (highestSection == -1) return
+
+            val bottomSection = max(0, highestSection - 4)
+            val topSection = min(chunks.lastIndex, highestSection + 2)
             val currentSeason = plugin.seasonManager.currentSeason
 
-            for (i in chunks.indices) {
+            for (i in bottomSection..topSection) {
                 val chunk = chunks[i] ?: continue
 
-                // chunk represents a 16x16x16 section in 1.18+
                 if (chunk is Chunk_v1_18) {
                     val biomeData = chunk.biomeData
+                    var sectionModified = false
 
-                    // PASS 1: Sweep the section and convert all Vanilla Biomes to Seasonal Normal Biomes.
+                    // МАКСИМАЛЬНО ТУПОЕ, НО РАБОЧЕЕ РЕШЕНИЕ:
+                    // Собираем все уникальные биомы, которые УЖЕ есть в секции.
+                    val currentUniqueBiomes = mutableSetOf<Int>()
+                    for (bx in 0..3) {
+                        for (by in 0..3) {
+                            for (bz in 0..3) {
+                                currentUniqueBiomes.add(biomeData.get(bx, by, bz))
+                            }
+                        }
+                    }
+
+                    // Если ванильный сервер УЖЕ прислал больше 8 биомов (Global Palette) - мы в безопасности, багов нет.
+                    val isGlobal = currentUniqueBiomes.size > 8
+
+                    // Хранилище того, что мы добавили, чтобы не пробить лимит в 8
+                    val addedBiomes = mutableSetOf<Int>()
+
+                    // PASS 1: Биомы
                     for (bx in 0..3) {
                         for (by in 0..3) {
                             for (bz in 0..3) {
                                 val currentBiomeId = biomeData.get(bx, by, bz)
-                                // Ищем ID текущего сезона
                                 val normalId = vanillaToSeasonalNormalMap[currentBiomeId]?.get(currentSeason)
-                                if (normalId != null) {
-                                    biomeData.set(bx, by, bz, normalId)
-                                    modified = true
+
+                                if (normalId != null && currentBiomeId != normalId) {
+                                    // Проверка безопасности: добавляем новый биом только если лимит не будет превышен
+                                    if (isGlobal || currentUniqueBiomes.contains(normalId) || addedBiomes.contains(normalId) || (currentUniqueBiomes.size + addedBiomes.size < 8)) {
+                                        biomeData.set(bx, by, bz, normalId)
+                                        addedBiomes.add(normalId)
+                                        sectionModified = true
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // PASS 2: Block Sweep. If we find target leaves, we change them and set local biome to Alternate.
+                    // PASS 2: Блоки и Теневые биомы
                     for (bx in 0..15) {
                         for (by in 0..15) {
                             for (bz in 0..15) {
                                 val currentStateId = chunk.get(bx, by, bz)
+                                if (currentStateId.globalId == 0) continue
+
                                 val replacementStateId = leafReplacementMap[currentStateId.globalId]
 
                                 if (replacementStateId != null) {
                                     chunk.set(bx, by, bz, replacementStateId)
-                                    modified = true
+                                    sectionModified = true
 
                                     val biomeX = bx / 4
                                     val biomeY = by / 4
                                     val biomeZ = bz / 4
 
                                     val currentBiomeId = biomeData.get(biomeX, biomeY, biomeZ)
-                                    // Notice: Because of PASS 1, currentBiomeId is likely the Normal Seasonal Biome now.
                                     val altBiomeId = normalToAlternateBiomeMap[currentBiomeId]
 
-                                    if (altBiomeId != null) {
-                                        biomeData.set(biomeX, biomeY, biomeZ, altBiomeId)
+                                    if (altBiomeId != null && currentBiomeId != altBiomeId) {
+                                        // Такая же проверка: ставим теневой биом только если есть свободный слот
+                                        if (isGlobal || currentUniqueBiomes.contains(altBiomeId) || addedBiomes.contains(altBiomeId) || (currentUniqueBiomes.size + addedBiomes.size < 8)) {
+                                            biomeData.set(biomeX, biomeY, biomeZ, altBiomeId)
+                                            addedBiomes.add(altBiomeId)
+                                            sectionModified = true
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+
+                    if (sectionModified) {
+                        modified = true
                     }
                 }
             }
@@ -251,7 +296,7 @@ object BiomeRegistryInterceptor : PacketListener {
                 event.markForReEncode(true)
             }
         } catch (e: Exception) {
-            // Silently catch to avoid spam on bad chunks
+            // Игнорируем
         }
     }
 
@@ -283,7 +328,7 @@ object BiomeRegistryInterceptor : PacketListener {
                 }
                 clone.setTag("effects", effectsClone)
             } else {
-                clone.setTag(key, tag) // Shallow copy for standard primitive tags
+                clone.setTag(key, tag)
             }
         }
         return clone
@@ -297,28 +342,19 @@ object BiomeRegistryInterceptor : PacketListener {
 
             val temperature = getFloat(nbt, "temperature", 0.5f)
             val downfall = getFloat(nbt, "downfall", 0.5f)
-
             val effects = getTagSafe(nbt, "effects") as? NBTCompound ?: return
-
-            val waterColor = getInt(effects, "water_color", 0) ?: 0
-            val waterFogColor = getInt(effects, "water_fog_color", 0) ?: 0
-            val skyColor = getInt(effects, "sky_color", 0) ?: 0
-            val fogColor = getInt(effects, "fog_color", 0) ?: 0
-
-            val grassColor = getInt(effects, "grass_color")
-            val foliageColor = getInt(effects, "foliage_color")
 
             val cachedBiome = CachedVanillaBiome(
                 namespace = namespace,
                 key = key,
                 temperature = temperature,
                 downfall = downfall,
-                waterColor = waterColor,
-                waterFogColor = waterFogColor,
-                skyColor = skyColor,
-                fogColor = fogColor,
-                grassColor = grassColor,
-                foliageColor = foliageColor
+                waterColor = getInt(effects, "water_color", 0) ?: 0,
+                waterFogColor = getInt(effects, "water_fog_color", 0) ?: 0,
+                skyColor = getInt(effects, "sky_color", 0) ?: 0,
+                fogColor = getInt(effects, "fog_color", 0) ?: 0,
+                grassColor = getInt(effects, "grass_color"),
+                foliageColor = getInt(effects, "foliage_color")
             )
 
             vanillaBiomesCache[fullKey] = cachedBiome
