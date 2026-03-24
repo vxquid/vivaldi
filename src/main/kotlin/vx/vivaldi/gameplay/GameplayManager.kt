@@ -6,10 +6,8 @@ import org.bukkit.event.world.WorldLoadEvent
 import vx.vivaldi.Vivaldi
 import vx.vivaldi.config.GameplayConfiguration
 import vx.vivaldi.config.lib.ConfigurationManager
-import vx.vivaldi.gameplay.feature.WolfAttributesFeature
-import vx.vivaldi.gameplay.feature.WolfHungerFeature
-import vx.vivaldi.gameplay.feature.WolfLeapFeature
-import vx.vivaldi.gameplay.feature.WolfSizeFeature
+import vx.vivaldi.gameplay.feature.PlantGrowthFeature
+import vx.vivaldi.gameplay.feature.SeasonalRepopulatorFeature
 
 class GameplayManager(val plugin: Vivaldi) : Listener {
 
@@ -17,7 +15,7 @@ class GameplayManager(val plugin: Vivaldi) : Listener {
     val allowedWorlds: Set<String> = config.worlds.allowedWorlds.toSet()
 
     fun registerFeatures() {
-        this.registerFeature(WolfSizeFeature, WolfLeapFeature, WolfAttributesFeature, WolfHungerFeature)
+        this.registerFeature(PlantGrowthFeature, SeasonalRepopulatorFeature)
         featureListeners.forEach { plugin.server.pluginManager.registerEvents(it, plugin) }
     }
 

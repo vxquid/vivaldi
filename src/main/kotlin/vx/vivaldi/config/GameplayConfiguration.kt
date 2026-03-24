@@ -2,17 +2,15 @@ package vx.vivaldi.config
 
 import vx.vivaldi.config.lib.annotations.Comment
 import vx.vivaldi.config.lib.annotations.Configuration
-import vx.vivaldi.gameplay.feature.WolfAttributesFeature
-import vx.vivaldi.gameplay.feature.WolfHungerFeature
-import vx.vivaldi.gameplay.feature.WolfLeapFeature
-import vx.vivaldi.gameplay.feature.WolfSizeFeature
+import vx.vivaldi.gameplay.feature.PlantGrowthFeature
+import vx.vivaldi.gameplay.feature.SeasonalRepopulatorFeature
 
 @Configuration("gameplay.yml")
 class GameplayConfiguration {
 
-    val general = GeneralConfig()
-    val worlds  = WorldsConfig()
-    val wolves  = WolfSection()
+    val general     = GeneralConfig()
+    val worlds      = WorldsConfig()
+    val environment = EnvironmentSection()
 
     class GeneralConfig {
         @Comment("Message prefix.")
@@ -21,15 +19,12 @@ class GameplayConfiguration {
 
     class WorldsConfig {
         @Comment("Worlds where vivaldi features are active. Everything else is vanilla.")
-        var allowedWorlds: List<String> = listOf("world", "world_nether", "world_the_end")
+        var allowedWorlds: List<String> = listOf("world")
     }
 
-    class WolfSection {
-        @Comment("todo; comment me!")
-        val size = WolfSizeFeature.WolfSizeConfig()
-        val leap = WolfLeapFeature.WolfLeapConfig()
-        val attributes = WolfAttributesFeature.WolfAttributesConfig()
-        val hunger = WolfHungerFeature.WolfHungerConfig()
+    class EnvironmentSection {
+        val plantGrowth = PlantGrowthFeature.PlantGrowthConfig()
+        val repopulator = SeasonalRepopulatorFeature.RepopulatorConfig()
     }
 
 }
