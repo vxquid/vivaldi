@@ -10,13 +10,14 @@ import org.bukkit.block.BlockFace
 import org.bukkit.block.data.Ageable
 import org.bukkit.block.data.Bisected
 import org.bukkit.block.data.type.Beehive
+import org.bukkit.event.Listener
 import org.bukkit.scheduler.BukkitRunnable
 import vx.vivaldi.Vivaldi.Companion.plugin
 import vx.vivaldi.config.lib.annotations.Comment
 import vx.vivaldi.season.Season
 import kotlin.random.Random
 
-object PlantGrowthFeature {
+object PlantGrowthFeature : Listener {
 
     class PlantGrowthConfig {
         var enabled: Boolean = true
