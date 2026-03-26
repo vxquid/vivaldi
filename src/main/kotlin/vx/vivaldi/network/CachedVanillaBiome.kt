@@ -12,7 +12,6 @@ import com.github.retrooper.packetevents.resources.ResourceLocation
 import com.github.retrooper.packetevents.wrapper.configuration.server.WrapperConfigServerRegistryData
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData
 import io.github.retrooper.packetevents.util.SpigotConversionUtil
-import io.netty.buffer.UnpooledHeapByteBuf
 import vx.vivaldi.Vivaldi.Companion.plugin
 import vx.vivaldi.season.Season
 import vx.vivaldi.season.biome.BiomeColorPalette
@@ -50,7 +49,7 @@ object BiomeRegistryInterceptor : PacketListener {
     // Maps: [Vanilla Biome Network ID] ->[Season -> Seasonal Normal Biome Network ID]
     private val vanillaToSeasonalNormalMap = ConcurrentHashMap<Int, Map<Season, Int>>()
 
-    // Maps: [Seasonal Normal Biome Network ID] -> [Seasonal Alternate Biome Network ID]
+    // Maps: [Seasonal Normal Biome Network ID] ->[Seasonal Alternate Biome Network ID]
     // Alternate biomes are used specifically under tree leaves to create a "shadow" or varied depth effect.
     private val normalToAlternateBiomeMap = ConcurrentHashMap<Int, Int>()
 
@@ -116,6 +115,22 @@ object BiomeRegistryInterceptor : PacketListener {
         }
     }
 
+    /**
+     * Calculates the dynamically shifted temperature for a biome based on the current season.
+     * This naturally triggers vanilla weather mechanics (like rendering snow instead of rain in winter).
+     * Vanilla snow threshold is < 0.15f.
+     */
+    private fun getSeasonalTemperature(baseTemp: Float, season: Season): Float {
+        val newTemp = when (season) {
+            Season.SPRING -> baseTemp + 0.05f // Mild, close to default
+            Season.SUMMER -> baseTemp + 0.40f // Hotter (might turn snow into rain in cold biomes)
+            Season.AUTUMN -> baseTemp - 0.20f // Cooler
+            Season.WINTER -> baseTemp - 0.80f // Freezing (causes snow in most temperate biomes)
+        }
+        // Minecraft usually bounds temperatures between -0.7 and 2.0
+        return max(-0.7f, min(2.0f, newTemp))
+    }
+
     override fun onPacketSend(event: PacketSendEvent) {
         when (event.packetType) {
             PacketType.Configuration.Server.REGISTRY_DATA -> handleRegistryData(event)
@@ -126,7 +141,7 @@ object BiomeRegistryInterceptor : PacketListener {
     /**
      * Intercepts the BIOME REGISTRY packet sent when a player joins.
      * We don't overwrite vanilla biomes; instead, we read them, apply our custom seasonal
-     * color palettes, and append them as brand NEW virtual biomes to the registry.
+     * color palettes and temperatures, and append them as brand NEW virtual biomes to the registry.
      */
     private fun handleRegistryData(event: PacketSendEvent) {
         try {
@@ -154,6 +169,9 @@ object BiomeRegistryInterceptor : PacketListener {
                     val rawName = (if (biomeKey.contains(":")) biomeKey.split(":")[1] else biomeKey).lowercase()
                     val seasonMap = mutableMapOf<Season, Int>()
 
+                    // Retrieve original baseline temperature
+                    val baseTemp = vanillaBiomesCache[biomeKey]?.temperature ?: 0.5f
+
                     // For every vanilla biome, generate its counterpart for ALL 4 seasons.
                     for (season in Season.entries) {
                         val seasonName = season.name.lowercase()
@@ -164,13 +182,18 @@ object BiomeRegistryInterceptor : PacketListener {
                             val normalKey = "vivaldi:${seasonName}_$rawName"
                             val altKey = "vivaldi:${seasonName}_${rawName}_alt"
 
+                            // Dynamically adjust temperature based on the season
+                            val seasonalTemp = getSeasonalTemperature(baseTemp, season)
+
                             // Generate NBT for the Normal Seasonal Biome
                             val normalNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
+                            normalNbt.setTag("temperature", NBTFloat(seasonalTemp)) // Inject new temp
                             val normalEffects = getOrCreateEffects(normalNbt)
                             injectColors(normalEffects, normalPalette)
 
                             // Generate NBT for the Alternate Seasonal Biome (used under leaves)
                             val altNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
+                            altNbt.setTag("temperature", NBTFloat(seasonalTemp)) // Inject new temp
                             val altEffects = getOrCreateEffects(altNbt)
                             injectColors(altEffects, altPalette)
 
@@ -296,7 +319,7 @@ object BiomeRegistryInterceptor : PacketListener {
                     // Track biomes we actively inject so we can accurately check against the limit
                     val addedBiomes = mutableSetOf<Int>()
 
-                    // PASS 1: Биомы
+                    // PASS 1: Biomes
                     for (bx in 0..3) {
                         for (by in 0..3) {
                             for (bz in 0..3) {
@@ -309,8 +332,8 @@ object BiomeRegistryInterceptor : PacketListener {
                                         addedBiomes.add(normalId)
                                         sectionModified = true
                                     } else {
-                                        // ЛИМИТ ПРЕВЫШЕН!
-                                        // Вместо того чтобы оставлять зелёный ванильный биом, берем ЛЮБОЙ уже добавленный осенний:
+                                        // LIMIT EXCEEDED!
+                                        // Instead of leaving a green vanilla biome, we take ANY already added seasonal biome:
                                         val safeFallback = addedBiomes.firstOrNull()
                                         if (safeFallback != null) {
                                             biomeData.set(bx, by, bz, safeFallback)
@@ -357,7 +380,7 @@ object BiomeRegistryInterceptor : PacketListener {
                                             addedBiomes.add(altBiomeId)
                                             sectionModified = true
                                         } else {
-                                            // ЛИМИТ ПРЕВЫШЕН! Красим листву в любой уже загруженный сезонный цвет.
+                                            // LIMIT EXCEEDED! Color the foliage in any already loaded seasonal color.
                                             val safeFallback = addedBiomes.firstOrNull()
                                             if (safeFallback != null) {
                                                 biomeData.set(biomeX, biomeY, biomeZ, safeFallback)

@@ -8,6 +8,8 @@ import vx.vivaldi.config.GameplayConfiguration
 import vx.vivaldi.config.lib.ConfigurationManager
 import vx.vivaldi.gameplay.feature.PlantGrowthFeature
 import vx.vivaldi.gameplay.feature.SeasonalRepopulatorFeature
+import vx.vivaldi.gameplay.feature.SnowAccumulationFeature
+import vx.vivaldi.gameplay.feature.WaterFreezingFeature
 
 class GameplayManager(val plugin: Vivaldi) : Listener {
 
@@ -15,7 +17,9 @@ class GameplayManager(val plugin: Vivaldi) : Listener {
     val allowedWorlds: Set<String> = config.worlds.allowedWorlds.toSet()
 
     fun registerFeatures() {
-        this.registerFeature(PlantGrowthFeature, SeasonalRepopulatorFeature)
+        this.registerFeature(PlantGrowthFeature, SeasonalRepopulatorFeature,
+            SnowAccumulationFeature, WaterFreezingFeature
+        )
         featureListeners.forEach { plugin.server.pluginManager.registerEvents(it, plugin) }
     }
 

@@ -4,7 +4,6 @@ import org.bukkit.Bukkit
 import org.bukkit.NamespacedKey
 import org.bukkit.event.Event
 import org.bukkit.event.HandlerList
-import org.bukkit.persistence.PersistentDataAdapterContext
 import org.bukkit.persistence.PersistentDataType
 import org.bukkit.scheduler.BukkitRunnable
 import vx.vivaldi.Vivaldi
@@ -30,74 +29,81 @@ class SeasonChangeEvent(val oldSeason: Season, val newSeason: Season) : Event() 
     override fun getHandlers(): HandlerList = handlerList
 }
 
-// Data class для упаковки состояния, который GSON будет конвертировать в JSON
+// Data class to wrap the state, which GSON will convert into JSON
 data class SeasonData(
     var season: Season = Season.AUTUMN,
     var passedTicks: Long = 0L
 )
 
-// Кастомный тип данных для PDC, связывающий GSON и Bukkit API
-class SeasonDataType : PersistentDataType<String, SeasonData> {
-    override fun getPrimitiveType(): Class<String> = String::class.java
-    override fun getComplexType(): Class<SeasonData> = SeasonData::class.java
-
-    override fun toPrimitive(complex: SeasonData, context: PersistentDataAdapterContext): String {
-        return gson.toJson(complex)
-    }
-
-    override fun fromPrimitive(primitive: String, context: PersistentDataAdapterContext): SeasonData {
-        return try {
-            gson.fromJson(primitive, SeasonData::class.java) ?: SeasonData()
-        } catch (e: Exception) {
-            SeasonData() // Возвращаем дефолт при ошибке чтения
-        }
-    }
-}
-
 class SeasonManager(private val plugin: Vivaldi) {
 
     val updateManager = SeasonUpdateManager()
 
-    // Configuration for time cycle
+    // Configuration for time cycle (72,000 ticks = 1 hour real-time per season)
     private val seasonDurationTicks: Long = 72_000L
 
-    // Инструменты работы с PDC
+    // PDC utilities
     private val pdcKey = NamespacedKey(plugin, "season_info")
-    private val pdcType = SeasonDataType()
 
-    // Внутренний кэш для мгновенного доступа без десериализации каждый раз
+    // Internal cache for instant access
     private var seasonData = SeasonData()
 
-    // The currently active season (читает напрямую из кэша)
+    // Safety flag to prevent overwriting existing world data with defaults before loading completes
+    private var isDataLoaded = false
+
     val currentSeason: Season
         get() = seasonData.season
 
-    init {
+    /**
+     * Called exactly once when the plugin enables.
+     */
+    fun initialize() {
         loadFromPDC()
+        startTimeCycle()
     }
 
     /**
-     * Загружает сохраненные данные из PDC главного мира.
+     * Loads the saved data from the PDC of the main world.
      */
     private fun loadFromPDC() {
-        // Сохраняем глобальную инфу в главном мире (index 0)
-        val world = Bukkit.getWorlds().firstOrNull() ?: return
+        val world = Bukkit.getWorlds().firstOrNull()
+        if (world == null) {
+            // Worlds are not loaded yet (e.g., startup phase). Wait 1 tick and retry.
+            Bukkit.getScheduler().runTask(plugin, Runnable { loadFromPDC() })
+            return
+        }
+
         val pdc = world.persistentDataContainer
 
-        if (pdc.has(pdcKey, pdcType)) {
-            seasonData = pdc.get(pdcKey, pdcType) ?: SeasonData()
-            plugin.logger.info("§a[Vivaldi] Loaded season data from PDC: ${seasonData.season} (${seasonData.passedTicks} ticks)")
+        // Reading directly as a String bypassing tricky custom Bukkit DataType abstractions
+        if (pdc.has(pdcKey, PersistentDataType.STRING)) {
+            val json = pdc.get(pdcKey, PersistentDataType.STRING)
+            if (json != null) {
+                try {
+                    seasonData = gson.fromJson(json, SeasonData::class.java) ?: SeasonData()
+                    plugin.logger.info("§a[Vivaldi] Loaded season data: ${seasonData.season} (${seasonData.passedTicks} ticks)")
+                } catch (e: Exception) {
+                    plugin.logger.warning("§c[Vivaldi] Corrupted season data! Starting fresh.")
+                    seasonData = SeasonData()
+                }
+            }
         } else {
-            saveToPDC() // Устанавливаем и сохраняем начальные значения
+            plugin.logger.info("§a[Vivaldi] No previous season data found. Starting fresh with ${seasonData.season}.")
         }
+
+        isDataLoaded = true
+        saveToPDC() // Commits the initial state if it was freshly generated
     }
 
     /**
-     * Синхронизирует текущий кэш с PDC мира.
+     * Synchronizes the current cache with the world's PDC.
      */
     fun saveToPDC() {
+        if (!isDataLoaded) return // CRITICAL: Don't overwrite data if we haven't read it yet!
+
         val world = Bukkit.getWorlds().firstOrNull() ?: return
-        world.persistentDataContainer.set(pdcKey, pdcType, seasonData)
+        val json = gson.toJson(seasonData)
+        world.persistentDataContainer.set(pdcKey, PersistentDataType.STRING, json)
     }
 
     /**
@@ -110,7 +116,6 @@ class SeasonManager(private val plugin: Vivaldi) {
         seasonData.season = newSeason
         seasonData.passedTicks = 0L // Reset the cycle timer
 
-        // Сохраняем сброс таймера и новый сезон в мир
         saveToPDC()
 
         // 1. Call custom Bukkit event
@@ -129,19 +134,17 @@ class SeasonManager(private val plugin: Vivaldi) {
     /**
      * Starts the background task that tracks time and automatically changes seasons.
      */
-    fun startTimeCycle() {
+    private fun startTimeCycle() {
         object : BukkitRunnable() {
             override fun run() {
+                if (!isDataLoaded) return // Wait until loading is complete
+
                 // We add 20 ticks (1 second) every execution
                 seasonData.passedTicks += 20
 
                 if (seasonData.passedTicks >= seasonDurationTicks) {
-                    // Transition to the next season in the cycle
                     setSeason(currentSeason.next())
                 } else {
-                    // Обновляем PDC. В Bukkit PDC висит в оперативной памяти и сбрасывается
-                    // на диск сервером пакетом при автосохранении мира (каждые ~5 мин).
-                    // Поэтому обновлять его каждую секунду здесь абсолютно безопасно для TPS.
                     saveToPDC()
                 }
             }

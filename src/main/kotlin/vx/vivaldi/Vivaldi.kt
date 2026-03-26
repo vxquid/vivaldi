@@ -19,9 +19,8 @@ class Vivaldi : JavaPlugin() {
 
     lateinit var providerManager: ProviderManager
     lateinit var gameplayManager: GameplayManager
-    lateinit var commandManager:  PaperCommandManager
+    lateinit var commandManager: PaperCommandManager
     lateinit var seasonalBiomeManager: SeasonalBiomeManager
-
     lateinit var seasonManager: SeasonManager
 
     var language: YamlConfiguration = run {
@@ -35,15 +34,25 @@ class Vivaldi : JavaPlugin() {
         this.gameplayManager = GameplayManager(this)
         this.commandManager  = PaperCommandManager(this)
         this.commandManager.registerCommand(VivaldiCommand())
+
         this.seasonalBiomeManager = SeasonalBiomeManager()
         this.seasonalBiomeManager.loadAllBiomes()
+
         this.seasonManager = SeasonManager(this)
+        this.seasonManager.initialize() // Запуск загрузки и старт таймера
 
         com.github.retrooper.packetevents.PacketEvents.getAPI().eventManager.registerListener(
             BiomeRegistryInterceptor,
             com.github.retrooper.packetevents.event.PacketListenerPriority.NORMAL
         )
+    }
 
+    override fun onDisable() {
+        // Гарантированное сохранение сезона перед выгрузкой миров сервером
+        if (this::seasonManager.isInitialized) {
+            seasonManager.saveToPDC()
+            logger.info("§a[Vivaldi] Season state saved successfully.")
+        }
     }
 
     init {
@@ -62,7 +71,5 @@ class Vivaldi : JavaPlugin() {
         fun Player.sendFormattedMessage(message: String) {
             this.sendMessage(plugin.gameplayManager.config.general.messagePrefix + " " + message)
         }
-
     }
-
 }

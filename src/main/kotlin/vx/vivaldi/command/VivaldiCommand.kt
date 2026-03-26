@@ -16,6 +16,7 @@ import org.bukkit.event.player.AsyncPlayerChatEvent
 import vx.vivaldi.Vivaldi.Companion.gson
 import vx.vivaldi.Vivaldi.Companion.plugin
 import vx.vivaldi.Vivaldi.Companion.sendFormattedMessage
+import vx.vivaldi.config.GameplayConfiguration
 import vx.vivaldi.config.ProviderConfiguration.ProviderType
 import vx.vivaldi.config.lib.ConfigurationManager
 import vx.vivaldi.network.BiomeRegistryInterceptor
@@ -43,12 +44,12 @@ class VivaldiCommand : BaseCommand(), Listener {
     init {
         plugin.server.pluginManager.registerEvents(this, plugin)
 
-        // Автокомплит для провайдеров
+        // Autocomplete for providers
         plugin.commandManager.commandCompletions.registerCompletion("providers") {
             ProviderType.entries.map { it.name }
         }
 
-        // Автокомплит для сезонов
+        // Autocomplete for seasons
         plugin.commandManager.commandCompletions.registerCompletion("seasons") {
             Season.entries.map { it.name }
         }
@@ -120,7 +121,6 @@ class VivaldiCommand : BaseCommand(), Listener {
         player.sendFormattedMessage("§a[Vivaldi] Advancing to the next season: §6${nextSeason.name}§a...")
         plugin.seasonManager.setSeason(nextSeason)
     }
-
 
     // --- SETUP LOGIC ---
 
@@ -196,7 +196,7 @@ class VivaldiCommand : BaseCommand(), Listener {
             SetupStep.LANGUAGE -> {
                 config.language = input
                 session.step = SetupStep.SETTING
-                player.sendFormattedMessage(STEP_3_PROMPT.replace("{n}", "4"))
+                player.sendFormattedMessage(STEP_3_PROMPT.replace("{n}", "3"))
             }
             SetupStep.SETTING -> {
                 config.setting = input
@@ -244,16 +244,28 @@ class VivaldiCommand : BaseCommand(), Listener {
             return
         }
 
-        // БЕРЁМ БИОМЫ НАПРЯМУЮ ИЗ BUKKIT API, ИСКЛЮЧАЯ ИСПОЛЬЗОВАНИЕ NMS И КЭША ПАКЕТОВ
+        val gameplayConfig = ConfigurationManager.load(GameplayConfiguration::class.java)
+        val excluded = gameplayConfig.environment.excludedBiomes.map { it.lowercase() }
+
         val biomes = Registry.BIOME.map { it.key }.filter { key ->
-            val name = key.key.lowercase()
-            !name.contains("nether") && !name.contains("end") &&
-                    !name.contains("crimson") && !name.contains("warped") &&
-                    !name.contains("basalt") && !name.contains("soul_sand")
+            val fullKey = "${key.namespace}:${key.key}".lowercase()
+            val shortKey = key.key.lowercase()
+
+            val isExcluded = excluded.any { ex ->
+                when {
+                    ex == fullKey || ex == shortKey -> true
+                    ex.contains("*") -> {
+                        val regex = ex.replace("*", ".*").toRegex()
+                        fullKey.matches(regex) || shortKey.matches(regex)
+                    }
+                    else -> false
+                }
+            }
+            !isExcluded
         }
 
         if (biomes.isEmpty()) {
-            player.sendFormattedMessage("§c[Vivaldi] Biome list is empty!")
+            player.sendFormattedMessage("§c[Vivaldi] Biome list is empty or all biomes are excluded in config!")
             return
         }
 
@@ -271,13 +283,25 @@ class VivaldiCommand : BaseCommand(), Listener {
 
         if (!queueFile.exists()) {
             val config = YamlConfiguration()
+            val gameplayConfig = ConfigurationManager.load(GameplayConfiguration::class.java)
+            val excluded = gameplayConfig.environment.excludedBiomes.map { it.lowercase() }
 
             val biomes = Registry.BIOME.map { it.key }.filter { key ->
-                val name = key.key.lowercase()
-                !name.contains("nether") && !name.contains("end") &&
-                        !name.contains("crimson") && !name.contains("warped") &&
-                        !name.contains("basalt") && !name.contains("soul_sand")
-            }.map { "${it.namespace}:${it.key}" } // Получаем строку namespace:key
+                val fullKey = "${key.namespace}:${key.key}".lowercase()
+                val shortKey = key.key.lowercase()
+
+                val isExcluded = excluded.any { ex ->
+                    when {
+                        ex == fullKey || ex == shortKey -> true
+                        ex.contains("*") -> {
+                            val regex = ex.replace("*", ".*").toRegex()
+                            fullKey.matches(regex) || shortKey.matches(regex)
+                        }
+                        else -> false
+                    }
+                }
+                !isExcluded
+            }.map { "${it.namespace}:${it.key}" }
 
             if (biomes.isEmpty()) {
                 player.sendFormattedMessage("§c[Vivaldi] Biome list is empty!")
@@ -315,13 +339,13 @@ class VivaldiCommand : BaseCommand(), Listener {
                     val namespace = split.getOrNull(0) ?: "minecraft"
                     val key = split.getOrNull(1) ?: fullKeyStr
 
-                    // Если пакеты успели закэшировать биом - берём его. Иначе создаём дефолтную болванку
+                    // If packets cached the biome, use it. Otherwise, create a default template.
                     val cachedBiome = BiomeRegistryInterceptor.vanillaBiomesCache[fullKeyStr] ?: CachedVanillaBiome(
                         namespace = namespace,
                         key = key,
                         temperature = 0.5f,
                         downfall = 0.5f,
-                        waterColor = 4159204, // Ванильные дефолтные цвета воды/тумана
+                        waterColor = 4159204,
                         waterFogColor = 329011,
                         skyColor = 7907327,
                         fogColor = 12638463,

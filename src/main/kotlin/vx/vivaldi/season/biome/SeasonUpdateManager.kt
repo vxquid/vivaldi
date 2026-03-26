@@ -1,29 +1,118 @@
 package vx.vivaldi.season.biome
 
 import org.bukkit.Bukkit
+import org.bukkit.World
 import org.bukkit.entity.Player
 import org.bukkit.potion.PotionEffect
 import org.bukkit.potion.PotionEffectType
 import org.bukkit.scheduler.BukkitRunnable
 import vx.vivaldi.Vivaldi.Companion.plugin
+import kotlin.math.abs
+import kotlin.math.max
 
 class SeasonUpdateManager {
 
     /**
-     * Плавно переотправляет чанки вокруг игрока.
-     * Создает визуальный эффект "волны" смены сезона от центра к краям.
+     * Вызывайте этот метод, когда на сервере глобально меняется сезон
+     */
+    fun applySeasonToAllOnline() {
+        // Используем Set (множество), чтобы ни один чанк не попал в список дважды,
+        // даже если рядом стоят 100 игроков. Это спасает от сетевого DDoS-а.
+        val chunksToUpdate = mutableSetOf<Pair<World, Pair<Int, Int>>>()
+        val playerCenters = mutableListOf<Pair<Player, Pair<Int, Int>>>()
+
+        for (player in Bukkit.getOnlinePlayers()) {
+            player.sendMessage("§b❄ §7The environment shifts around you as the new season begins...")
+            // Слепота чуть подольше, так как волна глобальная и может идти 5-10 секунд
+            player.addPotionEffect(PotionEffect(PotionEffectType.BLINDNESS, 20, 1, false, false, false))
+
+            val world = player.world
+            if (world.name !in plugin.gameplayManager.allowedWorlds) continue
+
+            val cx = player.location.chunk.x
+            val cz = player.location.chunk.z
+            playerCenters.add(player to (cx to cz))
+
+            // Берем чистую дальность клиента БЕЗ coerceAtMost().
+            // Если игрок видит на 16 чанков, мы пытаемся обновить 16.
+            // Проверка isChunkLoaded сама отсеет то, чего нет на сервере.
+            val viewDist = player.clientViewDistance
+
+            for (x in cx - viewDist..cx + viewDist) {
+                for (z in cz - viewDist..cz + viewDist) {
+                    if (world.isChunkLoaded(x, z)) {
+                        chunksToUpdate.add(world to (x to z))
+                    }
+                }
+            }
+        }
+
+        if (chunksToUpdate.isEmpty()) return
+
+        // Сортировка чанков от центра к краям для красивого эффекта разрастания сезона.
+        // Ищем минимальную дистанцию от конкретного чанка до ЛЮБОГО игрока в этом мире.
+        val sortedChunks = chunksToUpdate.sortedBy { chunkEntry ->
+            val world = chunkEntry.first
+            val cx = chunkEntry.second.first
+            val cz = chunkEntry.second.second
+
+            var minDist = Int.MAX_VALUE
+            for ((player, center) in playerCenters) {
+                if (player.world != world) continue
+                val dist = max(abs(cx - center.first), abs(cz - center.second))
+                if (dist < minDist) {
+                    minDist = dist
+                }
+            }
+            minDist
+        }
+
+        // Запускаем ОДИН глобальный асинхронный отправитель вместо десятка локальных
+        object : BukkitRunnable() {
+            var index = 0
+
+            // 15 чанков в тик глобально. Это ~300 чанков в секунду.
+            // Это абсолютно безопасно для любого железа и сети, клиент не захлебнётся.
+            val chunksPerTick = 15
+
+            override fun run() {
+                if (index >= sortedChunks.size) {
+                    cancel()
+                    return
+                }
+
+                for (i in 0 until chunksPerTick) {
+                    if (index >= sortedChunks.size) break
+
+                    val (world, coords) = sortedChunks[index]
+                    val (qx, qz) = coords
+
+                    // Исключаем ситуацию, когда игрок убежал, а чанк уже выгрузился
+                    if (world.isChunkLoaded(qx, qz)) {
+                        @Suppress("DEPRECATION")
+                        world.refreshChunk(qx, qz)
+                    }
+
+                    index++
+                }
+            }
+        }.runTaskTimer(plugin, 1L, 1L)
+    }
+
+    /**
+     * Оставим этот метод на случай, если тебе нужно обновить сезон
+     * только для ОДНОГО конкретного игрока (например, он только что зашел на сервер
+     * или телепортировался из ада/края).
      */
     fun playSeasonalTransition(player: Player) {
         val world = player.world
+        if (world.name !in plugin.gameplayManager.allowedWorlds) return
+
         val cx = player.location.chunk.x
         val cz = player.location.chunk.z
-
-        // Получаем реальную дальность прорисовки клиента
-        val viewDist = player.clientViewDistance.coerceAtMost(Bukkit.getViewDistance())
-
+        val viewDist = player.clientViewDistance
         val chunksToUpdate = mutableListOf<Pair<Int, Int>>()
 
-        // Собираем все загруженные чанки в радиусе видимости
         for (x in cx - viewDist..cx + viewDist) {
             for (z in cz - viewDist..cz + viewDist) {
                 if (world.isChunkLoaded(x, z)) {
@@ -32,21 +121,16 @@ class SeasonUpdateManager {
             }
         }
 
-        // Сортируем чанки по удаленности от игрока (ближайшие обновятся первыми)
-        chunksToUpdate.sortBy { (it.first - cx) * (it.first - cx) + (it.second - cz) * (it.second - cz) }
+        chunksToUpdate.sortBy { max(abs(it.first - cx), abs(it.second - cz)) }
 
-        player.sendMessage("§7The environment shifts around you as the new season begins...")
-
-        // Накладываем эффект слепоты, чтобы скрыть мерцание переотправки чанков
+        // Если это локальное обновление, не пишем глобальный текст, просто накидываем слепоту
         player.addPotionEffect(PotionEffect(PotionEffectType.BLINDNESS, 60, 1, false, false, false))
 
-        // Запускаем асинхронную отправку
         object : BukkitRunnable() {
             var index = 0
-            val chunksPerTick = 15 // Обновляем по 15 чанков в тик для безопасности TPS
+            val chunksPerTick = 10
 
             override fun run() {
-                // Если игрок вышел или мы обновили все чанки — тормозим таск
                 if (!player.isOnline || index >= chunksToUpdate.size) {
                     cancel()
                     return
@@ -56,24 +140,13 @@ class SeasonUpdateManager {
                     if (index >= chunksToUpdate.size) break
                     val (qx, qz) = chunksToUpdate[index]
 
-                    // Самый легальный и безопасный метод заставить сервер сформировать
-                    // новый пакет CHUNK_DATA. Он пройдет через наш BiomeRegistryInterceptor
-                    // и получит новые сезонные биомы.
-                    @Suppress("DEPRECATION")
-                    world.refreshChunk(qx, qz)
-
+                    if (world.isChunkLoaded(qx, qz)) {
+                        @Suppress("DEPRECATION")
+                        world.refreshChunk(qx, qz)
+                    }
                     index++
                 }
             }
         }.runTaskTimer(plugin, 1L, 1L)
-    }
-
-    /**
-     * Вызывайте этот метод, когда на сервере глобально меняется сезон
-     */
-    fun applySeasonToAllOnline() {
-        for (player in Bukkit.getOnlinePlayers()) {
-            playSeasonalTransition(player)
-        }
     }
 }

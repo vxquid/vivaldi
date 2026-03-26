@@ -2,6 +2,8 @@ package vx.vivaldi.season.biome
 
 import vx.vivaldi.Vivaldi.Companion.gson
 import vx.vivaldi.Vivaldi.Companion.plugin
+import vx.vivaldi.config.GameplayConfiguration
+import vx.vivaldi.config.lib.ConfigurationManager
 import vx.vivaldi.season.Season
 import java.io.File
 
@@ -22,17 +24,38 @@ class SeasonalBiomeManager {
         val biomesFolder = File(plugin.dataFolder, "biomes")
         if (!biomesFolder.exists()) return
 
+        // Load config to check for excluded biomes
+        val gameplayConfig = ConfigurationManager.load(GameplayConfiguration::class.java)
+        val excluded = gameplayConfig.environment.excludedBiomes.map { it.lowercase() }
+
         // Recursively find all .json files in the biomes directory and subdirectories
         biomesFolder.walkTopDown().filter { it.isFile && it.extension == "json" }.forEach { file ->
             try {
-                val container = gson.fromJson(file.readText(), GeneratedBiomeContainer::class.java)
-
                 // Assuming folder structure is: biomes/<namespace>/<key>.json
                 val namespace = file.parentFile.name
                 val key = file.nameWithoutExtension
                 val fullKey = "$namespace:$key"
 
+                val fullKeyLower = fullKey.lowercase()
+                val keyLower = key.lowercase()
+
+                // Check if the current biome matches any of the exclusion rules (including wildcards)
+                val isExcluded = excluded.any { ex ->
+                    when {
+                        ex == fullKeyLower || ex == keyLower -> true
+                        ex.contains("*") -> {
+                            val regex = ex.replace("*", ".*").toRegex()
+                            fullKeyLower.matches(regex) || keyLower.matches(regex)
+                        }
+                        else -> false
+                    }
+                }
+
+                if (isExcluded) return@forEach // Skip loading this biome
+
+                val container = gson.fromJson(file.readText(), GeneratedBiomeContainer::class.java)
                 seasonalBiomes[fullKey] = container
+
             } catch (e: Exception) {
                 plugin.logger.warning("Failed to load seasonal biome data from ${file.name}: ${e.message}")
             }

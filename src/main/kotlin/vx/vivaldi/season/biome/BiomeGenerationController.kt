@@ -40,7 +40,7 @@ class BiomeGenerationController(val cachedBiome: CachedVanillaBiome) {
     private val grassColor = formatColor(cachedBiome.grassColor)
     private val foliageColor = formatColor(cachedBiome.foliageColor)
 
-    // PROMPT UPDATED: Added emphasis on vibrancy, saturation, and avoiding muddy/dull colors.
+    // PROMPT UPDATED: Added context regarding dynamic temperatures to ensure AI is fully aware.
     private val biomePrompt = """
         You are an expert Minecraft technical artist and game designer. Your task is to generate custom seasonal color palettes for a specific biome.
         Respond ONLY with valid, parseable JSON. Do not include markdown code blocks (like ```json), explanations, or any other text.
@@ -48,7 +48,7 @@ class BiomeGenerationController(val cachedBiome: CachedVanillaBiome) {
         ### BASE BIOME DATA (ORIGINAL/VANILLA):
         - Origin Generator: `$namespace` ($generatorContext)
         - Biome Name: `$biomeName`
-        - Temperature: $temp (determines if it's freezing, temperate, or hot)
+        - Base Temperature: $temp (determines if it's freezing, temperate, or hot. Note: The plugin dynamically shifts this in-game by +0.4 in Summer and -0.8 in Winter to allow realistic weather like snow, but you must base your colors strictly on the original base temperature.)
         - Humidity/Downfall: $downfall (determines if it's arid, average, or wet)
         - Original Water Color: $waterColor
         - Original Water Fog Color: $waterFogColor
