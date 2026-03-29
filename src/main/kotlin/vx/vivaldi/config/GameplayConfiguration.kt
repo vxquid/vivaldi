@@ -3,7 +3,10 @@ package vx.vivaldi.config
 import vx.vivaldi.config.lib.annotations.Comment
 import vx.vivaldi.config.lib.annotations.Configuration
 import vx.vivaldi.gameplay.feature.PlantGrowthFeature
-import vx.vivaldi.gameplay.feature.SeasonalRepopulatorFeature
+import vx.vivaldi.gameplay.feature.SeasonalChunkSyncFeature
+import vx.vivaldi.gameplay.feature.SeasonalDaylightFeature
+import vx.vivaldi.gameplay.feature.SeasonalMeltingFeature
+import vx.vivaldi.gameplay.feature.SeasonalWeatherFeature
 import vx.vivaldi.gameplay.feature.SnowAccumulationFeature
 import vx.vivaldi.gameplay.feature.WaterFreezingFeature
 
@@ -49,13 +52,25 @@ class GameplayConfiguration {
             "minecraft:end_barrens"
         )
 
+        @Comment("todo; comment me")
         val plantGrowth = PlantGrowthFeature.PlantGrowthConfig()
-        val repopulator = SeasonalRepopulatorFeature.RepopulatorConfig()
+
+        @Comment("todo; comment me")
+        val repopulator = SeasonalChunkSyncFeature.ChunkSyncConfig()
 
         @Comment("Custom dynamic snow mechanics for Winter season")
         val snowAccumulation = SnowAccumulationFeature.SnowConfig()
 
         @Comment("Gradual water freezing mechanics for Winter season")
         val waterFreezing = WaterFreezingFeature.WaterFreezingConfig()
+
+        @Comment("Melting configuration. Melting works for all seasons except winter.")
+        val melting = SeasonalMeltingFeature.MeltingConfig()
+
+        @Comment("todo; comment me")
+        val daylight = SeasonalDaylightFeature.DaylightConfig()
+
+        @Comment("todo; comment me")
+        val weather = SeasonalWeatherFeature.WeatherConfig()
     }
 }

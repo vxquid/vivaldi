@@ -4,6 +4,8 @@ import org.bukkit.Bukkit
 import org.bukkit.ChunkSnapshot
 import org.bukkit.Material
 import org.bukkit.World
+import org.bukkit.block.BlockFace
+import org.bukkit.block.data.Bisected
 import org.bukkit.block.data.Levelled
 import org.bukkit.event.Listener
 import org.bukkit.scheduler.BukkitRunnable
@@ -144,7 +146,8 @@ object WaterFreezingFeature : Listener {
                                 for (y in highestY downTo world.minHeight) {
                                     val type = snapshot.getBlockType(lx, y, lz)
 
-                                    if (type == Material.WATER) {
+                                    // Identify water surface OR water plants that reach the surface
+                                    if (type == Material.WATER || type == Material.SEAGRASS || type == Material.TALL_SEAGRASS || type == Material.KELP || type == Material.KELP_PLANT) {
                                         targetY = y
                                         break
                                     }
@@ -172,8 +175,18 @@ object WaterFreezingFeature : Listener {
 
                                 if (targetY == -1) continue
 
-                                val blockData = snapshot.getBlockData(lx, targetY, lz)
-                                if (blockData is Levelled && blockData.level == 0) {
+                                val targetType = snapshot.getBlockType(lx, targetY, lz)
+                                var isFreezableWater = false
+
+                                // Strict check: Make sure it's a full block of water (level 0) or a waterlogged plant
+                                if (targetType == Material.WATER) {
+                                    val blockData = snapshot.getBlockData(lx, targetY, lz)
+                                    if (blockData is Levelled && blockData.level == 0) isFreezableWater = true
+                                } else if (targetType == Material.SEAGRASS || targetType == Material.TALL_SEAGRASS || targetType == Material.KELP || targetType == Material.KELP_PLANT) {
+                                    isFreezableWater = true
+                                }
+
+                                if (isFreezableWater) {
 
                                     val biomeName = "minecraft:" + snapshot.getBiome(lx, targetY, lz).key.key.lowercase()
                                     if (isBiomeExcluded(biomeName)) continue
@@ -211,11 +224,31 @@ object WaterFreezingFeature : Listener {
                         Bukkit.getScheduler().runTask(plugin, Runnable {
                             for (p in finalPlacements) {
                                 val block = p.world.getBlockAt(p.x, p.y, p.z)
-                                if (block.type == Material.WATER) {
+                                val type = block.type
+
+                                var shouldFreeze = false
+                                if (type == Material.WATER) {
                                     val data = block.blockData
                                     if (data is Levelled && data.level == 0) {
-                                        block.type = Material.ICE
+                                        shouldFreeze = true
                                     }
+                                } else if (type == Material.SEAGRASS || type == Material.TALL_SEAGRASS || type == Material.KELP || type == Material.KELP_PLANT) {
+                                    shouldFreeze = true
+                                }
+
+                                if (shouldFreeze) {
+                                    // Handle 2-tall plants safely to prevent item drops and physics glitches
+                                    if (type == Material.TALL_SEAGRASS) {
+                                        val data = block.blockData as? Bisected
+                                        if (data != null && data.half == Bisected.Half.TOP) {
+                                            val bottom = block.getRelative(BlockFace.DOWN)
+                                            if (bottom.type == Material.TALL_SEAGRASS) {
+                                                bottom.setType(Material.SEAGRASS, false) // Trim down to 1-tall seagrass
+                                            }
+                                        }
+                                    }
+
+                                    block.setType(Material.ICE, false)
                                 }
                             }
                         })

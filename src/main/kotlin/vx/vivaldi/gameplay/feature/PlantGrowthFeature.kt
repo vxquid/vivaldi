@@ -62,23 +62,42 @@ object PlantGrowthFeature : Listener {
         @Comment("Шансы осенних растений (Осень)")
         var mushroomChance: Double = 0.30
         var pumpkinChance: Double = 0.03
+
+        @Comment("Шанс замены цветка на опавшую листву (LEAF_LITTER) осенью")
+        var autumnFlowerReplaceChance: Double = 0.40
+
+        @Comment("Шанс ускоренного роста существующих диких культур осенью (эффект жатвы)")
+        var autumnCropGrowthChance: Double = 0.60
     }
 
     private val cfg get() = plugin.gameplayManager.config.environment.plantGrowth
     private var task: BukkitRunnable? = null
 
+    // Used for spawning new flowers in Spring/Summer
     private val flowers = listOf(
         Material.DANDELION, Material.POPPY, Material.CORNFLOWER,
         Material.OXEYE_DAISY, Material.AZURE_BLUET, Material.ALLIUM
     )
 
-    // Список возможных агрокультур
+    // Used for identifying ANY flower in the world to replace it in Autumn
+    private val allFlowers = setOf(
+        Material.DANDELION, Material.POPPY, Material.BLUE_ORCHID, Material.ALLIUM,
+        Material.AZURE_BLUET, Material.RED_TULIP, Material.ORANGE_TULIP,
+        Material.WHITE_TULIP, Material.PINK_TULIP, Material.OXEYE_DAISY,
+        Material.CORNFLOWER, Material.LILY_OF_THE_VALLEY, Material.WITHER_ROSE,
+        Material.SUNFLOWER, Material.LILAC, Material.ROSE_BUSH, Material.PEONY,
+        Material.WILDFLOWERS, Material.PITCHER_PLANT, Material.TORCHFLOWER,
+        Material.OPEN_EYEBLOSSOM, Material.CLOSED_EYEBLOSSOM
+    )
+
+    // Used for wild crop placements and identifying existing crops
     private val crops = listOf(
         Material.WHEAT, Material.CARROTS, Material.POTATOES, Material.BEETROOTS
     )
 
     private enum class GrowthMode {
-        NORMAL, CROP, TALL_PLANT, TREE, CACTUS, SUGAR_CANE, BEE_NEST
+        NORMAL, CROP, TALL_PLANT, TREE, CACTUS, SUGAR_CANE, BEE_NEST,
+        REPLACE_WITH_LEAF_LITTER, AGE_CROP
     }
 
     private enum class ForestTree {
@@ -138,14 +157,42 @@ object PlantGrowthFeature : Listener {
                         for (i in 0 until attempts) {
                             val lx = Random.nextInt(16)
                             val lz = Random.nextInt(16)
+
+                            val globalX = (snapshot.x * 16) + lx
+                            val globalZ = (snapshot.z * 16) + lz
+
                             val highestY = snapshot.getHighestBlockYAt(lx, lz)
+                            // BUGFIX: getHighestBlockYAt uses MOTION_BLOCKING heightmap which ignores non-solid blocks like flowers!
+                            // We offset by +3 to guarantee we scan the air/plants resting on top of the solid ground.
+                            val startY = minOf(world.maxHeight - 1, highestY + 3)
 
                             var groundY = -1
                             var groundType = Material.AIR
+                            var foundAutumnOverride = false
 
-                            // Сканируем вниз, чтобы найти поверхность
-                            for (y in highestY downTo world.minHeight) {
+                            // Scan downwards to find the surface
+                            for (y in startY downTo world.minHeight) {
                                 val type = snapshot.getBlockType(lx, y, lz)
+                                if (type.isAir) continue
+
+                                // AUTUMN OVERRIDES: Intercept existing flowers and crops before hitting solid ground
+                                if (currentSeason == Season.AUTUMN) {
+                                    if (allFlowers.contains(type)) {
+                                        if (Random.nextDouble() < cfg.autumnFlowerReplaceChance) {
+                                            placements.add(PlantPlacement(world, globalX, globalZ, Material.LEAF_LITTER, GrowthMode.REPLACE_WITH_LEAF_LITTER, overrideY = y))
+                                        }
+                                        foundAutumnOverride = true
+                                        break
+                                    }
+                                    if (crops.contains(type)) {
+                                        if (Random.nextDouble() < cfg.autumnCropGrowthChance) {
+                                            placements.add(PlantPlacement(world, globalX, globalZ, type, GrowthMode.AGE_CROP, overrideY = y))
+                                        }
+                                        foundAutumnOverride = true
+                                        break
+                                    }
+                                }
+
                                 if (type == Material.GRASS_BLOCK || type == Material.PODZOL || type == Material.DIRT || type == Material.SAND || type == Material.WATER) {
                                     groundY = y
                                     groundType = type
@@ -154,6 +201,8 @@ object PlantGrowthFeature : Listener {
                                 if (type.isSolid && !type.name.contains("LEAVES") && !type.name.contains("LOG") && !type.name.contains("WOOD")) break
                             }
 
+                            // If we already scheduled an autumn replacement/growth, skip generating a new plant here
+                            if (foundAutumnOverride) continue
                             if (groundY == -1 || groundY >= world.maxHeight - 2) continue
 
                             val airBlockType = snapshot.getBlockType(lx, groundY + 1, lz)
@@ -161,10 +210,8 @@ object PlantGrowthFeature : Listener {
 
                             val skyLight = snapshot.getBlockSkyLight(lx, groundY + 1, lz)
                             val roll = Random.nextDouble()
-                            val globalX = (snapshot.x * 16) + lx
-                            val globalZ = (snapshot.z * 16) + lz
 
-                            // Проверка воды поблизости
+                            // Proximity water scan
                             var nearWater = false
                             val minWX = maxOf(0, lx - 4); val maxWX = minOf(15, lx + 4)
                             val minWZ = maxOf(0, lz - 4); val maxWZ = minOf(15, lz + 4)
@@ -176,7 +223,7 @@ object PlantGrowthFeature : Listener {
                                 }
                             }
 
-                            // Строгая проверка воды вплотную
+                            // Strict adjacent water scan
                             var adjacentWater = false
                             if (lx > 0 && snapshot.getBlockType(lx - 1, groundY, lz) == Material.WATER) adjacentWater = true
                             if (lx < 15 && snapshot.getBlockType(lx + 1, groundY, lz) == Material.WATER) adjacentWater = true
@@ -223,8 +270,18 @@ object PlantGrowthFeature : Listener {
                                 if (roll < cfg.pumpkinChance) {
                                     val clusterSize = Random.nextInt(1, 4)
                                     for (c in 0 until clusterSize) {
-                                        val pType = if (Random.nextDouble() < 0.05) Material.JACK_O_LANTERN else if (Random.nextDouble() < 0.15) Material.CARVED_PUMPKIN else Material.PUMPKIN
-                                        placements.add(PlantPlacement(world, globalX + Random.nextInt(-2, 3), globalZ + Random.nextInt(-2, 3), pType, GrowthMode.NORMAL))
+                                        val cLx = (lx + Random.nextInt(-2, 3)).coerceIn(0, 15)
+                                        val cLz = (lz + Random.nextInt(-2, 3)).coerceIn(0, 15)
+
+                                        val pType = if (cLx in 1..14 && cLz in 1..14) {
+                                            if (Random.nextDouble() < 0.05) Material.JACK_O_LANTERN
+                                            else if (Random.nextDouble() < 0.15) Material.CARVED_PUMPKIN
+                                            else Material.PUMPKIN
+                                        } else {
+                                            Material.PUMPKIN
+                                        }
+
+                                        placements.add(PlantPlacement(world, (snapshot.x shl 4) + cLx, (snapshot.z shl 4) + cLz, pType, GrowthMode.NORMAL))
                                     }
                                 } else if (skyLight < 13 && roll < cfg.mushroomChance) {
                                     val mushroomType = if (Random.nextBoolean()) Material.RED_MUSHROOM else Material.BROWN_MUSHROOM
@@ -247,11 +304,12 @@ object PlantGrowthFeature : Listener {
                                         }
                                     }
                                     hasLight && roll < (cfg.treeChance + cfg.cropChance) -> {
-                                        // Случайно выбираем какую культуру сажать на этой полянке
                                         val cropType = crops.random()
                                         val clusterSize = (Random.nextInt(cfg.minCropCluster, cfg.maxCropCluster + 1) * clusterMult).toInt()
                                         for (c in 0 until clusterSize) {
-                                            placements.add(PlantPlacement(world, globalX + Random.nextInt(-2, 3), globalZ + Random.nextInt(-2, 3), cropType, GrowthMode.CROP))
+                                            val cLx = (lx + Random.nextInt(-2, 3)).coerceIn(0, 15)
+                                            val cLz = (lz + Random.nextInt(-2, 3)).coerceIn(0, 15)
+                                            placements.add(PlantPlacement(world, (snapshot.x shl 4) + cLx, (snapshot.z shl 4) + cLz, cropType, GrowthMode.CROP))
                                         }
                                     }
                                     hasLight && roll < (cfg.treeChance + cfg.cropChance + cfg.flowerChance) -> {
@@ -260,13 +318,17 @@ object PlantGrowthFeature : Listener {
                                     roll < (cfg.treeChance + cfg.cropChance + cfg.flowerChance + cfg.tallGrassChance) -> {
                                         val clusterSize = (Random.nextInt(cfg.minGrassCluster, cfg.maxGrassCluster + 1) * clusterMult).toInt()
                                         for (c in 0 until clusterSize) {
-                                            placements.add(PlantPlacement(world, globalX + Random.nextInt(-2, 3), globalZ + Random.nextInt(-2, 3), Material.TALL_GRASS, GrowthMode.TALL_PLANT))
+                                            val cLx = (lx + Random.nextInt(-2, 3)).coerceIn(0, 15)
+                                            val cLz = (lz + Random.nextInt(-2, 3)).coerceIn(0, 15)
+                                            placements.add(PlantPlacement(world, (snapshot.x shl 4) + cLx, (snapshot.z shl 4) + cLz, Material.TALL_GRASS, GrowthMode.TALL_PLANT))
                                         }
                                     }
                                     else -> {
                                         val clusterSize = (Random.nextInt(cfg.minGrassCluster, cfg.maxGrassCluster + 1) * clusterMult).toInt()
                                         for (c in 0 until clusterSize) {
-                                            placements.add(PlantPlacement(world, globalX + Random.nextInt(-2, 3), globalZ + Random.nextInt(-2, 3), Material.SHORT_GRASS, GrowthMode.NORMAL))
+                                            val cLx = (lx + Random.nextInt(-2, 3)).coerceIn(0, 15)
+                                            val cLz = (lz + Random.nextInt(-2, 3)).coerceIn(0, 15)
+                                            placements.add(PlantPlacement(world, (snapshot.x shl 4) + cLx, (snapshot.z shl 4) + cLz, Material.SHORT_GRASS, GrowthMode.NORMAL))
                                         }
                                     }
                                 }
@@ -274,13 +336,51 @@ object PlantGrowthFeature : Listener {
                         }
                     }
 
-                    //[СИНХРОННАЯ ФАЗА: РАЗМЕЩЕНИЕ]
+                    // [SYNCHRONOUS PHASE]
                     if (placements.isNotEmpty()) {
                         Bukkit.getScheduler().runTask(plugin, Runnable {
                             for (p in placements) {
+                                if (!p.world.isChunkLoaded(p.x shr 4, p.z shr 4)) continue
+
                                 val actualY = p.overrideY ?: findGroundY(p.world, p.x, p.z)
                                 if (actualY == -1) continue
 
+                                // 1. AUTUMN MODIFICATIONS (Targets existing blocks)
+                                if (p.mode == GrowthMode.REPLACE_WITH_LEAF_LITTER) {
+                                    val block = p.world.getBlockAt(p.x, actualY, p.z)
+                                    // Failsafe: make sure the flower wasn't already broken by a player
+                                    if (allFlowers.contains(block.type)) {
+                                        val blockData = block.blockData
+                                        if (blockData is Bisected) {
+                                            // Handle 2-tall flowers safely so they don't trigger physics updates and drop items
+                                            if (blockData.half == Bisected.Half.TOP) {
+                                                val bottom = block.getRelative(BlockFace.DOWN)
+                                                block.setType(Material.AIR, false)
+                                                if (allFlowers.contains(bottom.type)) bottom.setType(Material.LEAF_LITTER, false)
+                                            } else {
+                                                val top = block.getRelative(BlockFace.UP)
+                                                if (allFlowers.contains(top.type)) top.setType(Material.AIR, false)
+                                                block.setType(Material.LEAF_LITTER, false)
+                                            }
+                                        } else {
+                                            block.setType(Material.LEAF_LITTER, false)
+                                        }
+                                    }
+                                    continue
+                                }
+
+                                if (p.mode == GrowthMode.AGE_CROP) {
+                                    val block = p.world.getBlockAt(p.x, actualY, p.z)
+                                    val blockData = block.blockData as? Ageable
+                                    if (blockData != null && crops.contains(block.type)) {
+                                        // Massive harvest boost: jump 2 to 4 growth stages instantly
+                                        blockData.age = minOf(blockData.maximumAge, blockData.age + Random.nextInt(2, 5))
+                                        block.setBlockData(blockData, false)
+                                    }
+                                    continue
+                                }
+
+                                // 2. STANDARD PLACEMENTS (Targets empty air above ground)
                                 val groundBlock = p.world.getBlockAt(p.x, actualY, p.z)
                                 val airBlock = p.world.getBlockAt(p.x, actualY + 1, p.z)
 
@@ -288,7 +388,7 @@ object PlantGrowthFeature : Listener {
                                     val nestBlock = p.world.getBlockAt(p.x, actualY, p.z)
                                     val leafBlock = nestBlock.getRelative(BlockFace.UP)
                                     if (nestBlock.type.isAir && (leafBlock.type == Material.OAK_LEAVES || leafBlock.type == Material.BIRCH_LEAVES)) {
-                                        nestBlock.type = Material.BEE_NEST
+                                        nestBlock.setType(Material.BEE_NEST, false)
                                         val blockData = nestBlock.blockData as Beehive
                                         blockData.facing = listOf(BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST).random()
                                         nestBlock.blockData = blockData
@@ -308,7 +408,7 @@ object PlantGrowthFeature : Listener {
                                                     for (face in listOf(BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)) {
                                                         if (current.getRelative(face).type.isSolid) currentSafe = false
                                                     }
-                                                    if (current.type.isAir && currentSafe) current.type = Material.CACTUS
+                                                    if (current.type.isAir && currentSafe) current.setType(Material.CACTUS, false)
                                                     else break
                                                 }
                                             }
@@ -318,7 +418,7 @@ object PlantGrowthFeature : Listener {
                                                 val height = Random.nextInt(1, 4)
                                                 for (dy in 0 until height) {
                                                     val current = p.world.getBlockAt(p.x, actualY + 1 + dy, p.z)
-                                                    if (current.type.isAir) current.type = Material.SUGAR_CANE
+                                                    if (current.type.isAir) current.setType(Material.SUGAR_CANE, false)
                                                     else break
                                                 }
                                             }
@@ -330,12 +430,10 @@ object PlantGrowthFeature : Listener {
                                         }
                                         GrowthMode.CROP -> {
                                             if (groundBlock.type == Material.GRASS_BLOCK) {
-                                                groundBlock.type = Material.FARMLAND
-                                                airBlock.type = p.type
+                                                groundBlock.setType(Material.FARMLAND, false)
+                                                airBlock.setType(p.type, false)
                                                 val blockData = airBlock.blockData as? Ageable
                                                 if (blockData != null) {
-                                                    // Рассчитываем случайный "дикий" возраст. У пшеницы/моркови 7 стадий, у свеклы 3.
-                                                    // Мы не даем им вырастать полностью с самого начала.
                                                     val maxWildAge = maxOf(1, blockData.maximumAge / 2)
                                                     blockData.age = Random.nextInt(0, maxWildAge + 1)
                                                     airBlock.blockData = blockData
@@ -345,13 +443,13 @@ object PlantGrowthFeature : Listener {
                                         GrowthMode.TALL_PLANT -> {
                                             val upperAir = p.world.getBlockAt(p.x, actualY + 2, p.z)
                                             if (upperAir.type.isAir) {
-                                                airBlock.type = p.type
+                                                airBlock.setType(p.type, false)
                                                 val bottomData = airBlock.blockData as? Bisected
                                                 if (bottomData != null) {
                                                     bottomData.half = Bisected.Half.BOTTOM
                                                     airBlock.blockData = bottomData
                                                 }
-                                                upperAir.type = p.type
+                                                upperAir.setType(p.type, false)
                                                 val topData = upperAir.blockData as? Bisected
                                                 if (topData != null) {
                                                     topData.half = Bisected.Half.TOP
@@ -361,9 +459,9 @@ object PlantGrowthFeature : Listener {
                                         }
                                         GrowthMode.NORMAL -> {
                                             if (p.type == Material.RED_MUSHROOM || p.type == Material.BROWN_MUSHROOM) {
-                                                if (groundBlock.type == Material.PODZOL || airBlock.lightLevel < 13) airBlock.type = p.type
+                                                if (groundBlock.type == Material.PODZOL || airBlock.lightLevel < 13) airBlock.setType(p.type, false)
                                             } else {
-                                                airBlock.type = p.type
+                                                airBlock.setType(p.type, false)
                                             }
                                         }
                                         else -> {}
