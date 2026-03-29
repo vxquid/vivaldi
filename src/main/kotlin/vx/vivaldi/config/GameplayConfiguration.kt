@@ -52,25 +52,13 @@ class GameplayConfiguration {
             "minecraft:end_barrens"
         )
 
-        @Comment("todo; comment me")
         val plantGrowth = PlantGrowthFeature.PlantGrowthConfig()
-
-        @Comment("todo; comment me")
         val repopulator = SeasonalChunkSyncFeature.ChunkSyncConfig()
-
-        @Comment("Custom dynamic snow mechanics for Winter season")
         val snowAccumulation = SnowAccumulationFeature.SnowConfig()
-
-        @Comment("Gradual water freezing mechanics for Winter season")
         val waterFreezing = WaterFreezingFeature.WaterFreezingConfig()
-
-        @Comment("Melting configuration. Melting works for all seasons except winter.")
         val melting = SeasonalMeltingFeature.MeltingConfig()
-
-        @Comment("todo; comment me")
         val daylight = SeasonalDaylightFeature.DaylightConfig()
-
-        @Comment("todo; comment me")
         val weather = SeasonalWeatherFeature.WeatherConfig()
+
     }
 }

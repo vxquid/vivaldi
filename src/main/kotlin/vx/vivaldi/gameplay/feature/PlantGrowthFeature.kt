@@ -22,23 +22,23 @@ object PlantGrowthFeature : Listener {
     class PlantGrowthConfig {
         var enabled: Boolean = true
 
-        @Comment("Как часто запускать цикл роста (в тиках). 100 = каждые 5 секунд")
+        @Comment("How often to run the growth cycle (in ticks). 100 = every 5 seconds")
         var intervalTicks: Long = 100L
         var chunksPerCycle: Int = 15
         var attemptsPerChunk: Int = 4
 
-        @Comment("Во сколько раз больше попыток роста делать, если идет дождь")
+        @Comment("How many times more growth attempts to make if it's raining")
         var rainAttemptsMultiplier: Int = 3
-        @Comment("Множитель густоты травы (размера кластера), если рядом вода")
+        @Comment("Grass density (cluster size) multiplier if near water")
         var waterProximityMultiplier: Double = 2.0
 
-        @Comment("Шансы роста стандартных растений (Весна/Лето)")
+        @Comment("Growth chances for standard plants (Spring/Summer)")
         var treeChance: Double = 0.005
         var instantTreeGrowth: Boolean = false
 
-        @Comment("Шанс (0.0 - 1.0) вырастить дикие культуры (пшеницу, морковь, картофель, свеклу)")
+        @Comment("Chance (0.0 - 1.0) to grow wild crops (wheat, carrots, potatoes, beetroots)")
         var cropChance: Double = 0.02
-        @Comment("Минимальное и максимальное количество побегов диких культур в одной зоне")
+        @Comment("Minimum and maximum number of wild crop sprouts in a single cluster")
         var minCropCluster: Int = 5
         var maxCropCluster: Int = 6
 
@@ -47,26 +47,26 @@ object PlantGrowthFeature : Listener {
         var minGrassCluster: Int = 3
         var maxGrassCluster: Int = 6
 
-        @Comment("Шанс вырастить кувшинку на воде (Весна/Лето)")
+        @Comment("Chance to grow a lily pad on water (Spring/Summer)")
         var lilyPadChance: Double = 0.08
 
-        @Comment("Шанс появления пчелиного улья под дубовой/березовой листвой (Весна)")
+        @Comment("Chance of a bee nest spawning under oak/birch leaves (Spring)")
         var beeNestChance: Double = 0.01
 
-        @Comment("Шанс вырастить кактус на песке (Весна/Лето/Осень)")
+        @Comment("Chance to grow a cactus on sand (Spring/Summer/Autumn)")
         var cactusChance: Double = 0.05
 
-        @Comment("Шанс вырастить сахарный тростник у воды (Весна/Лето/Осень)")
+        @Comment("Chance to grow sugar cane near water (Spring/Summer/Autumn)")
         var sugarCaneChance: Double = 0.10
 
-        @Comment("Шансы осенних растений (Осень)")
+        @Comment("Chances for autumn plants (Autumn)")
         var mushroomChance: Double = 0.30
         var pumpkinChance: Double = 0.03
 
-        @Comment("Шанс замены цветка на опавшую листву (LEAF_LITTER) осенью")
+        @Comment("Chance to replace a flower with leaf litter (LEAF_LITTER) in Autumn")
         var autumnFlowerReplaceChance: Double = 0.40
 
-        @Comment("Шанс ускоренного роста существующих диких культур осенью (эффект жатвы)")
+        @Comment("Chance of accelerated growth for existing wild crops in Autumn (harvest effect)")
         var autumnCropGrowthChance: Double = 0.60
     }
 
