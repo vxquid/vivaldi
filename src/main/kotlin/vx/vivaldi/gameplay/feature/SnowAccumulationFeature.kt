@@ -56,7 +56,8 @@ object SnowAccumulationFeature : Listener {
         Material.WHITE_TULIP, Material.PINK_TULIP, Material.OXEYE_DAISY, Material.CORNFLOWER,
         Material.LILY_OF_THE_VALLEY, Material.WITHER_ROSE, Material.SUNFLOWER, Material.LILAC,
         Material.ROSE_BUSH, Material.PEONY, Material.TALL_GRASS, Material.SHORT_GRASS,
-        Material.FERN, Material.LARGE_FERN, Material.DEAD_BUSH, Material.WILDFLOWERS, Material.LEAF_LITTER, Material.FIREFLY_BUSH
+        Material.FERN, Material.LARGE_FERN, Material.DEAD_BUSH, Material.WILDFLOWERS,
+        Material.LEAF_LITTER, Material.FIREFLY_BUSH
     )
 
     private enum class SnowAction {
@@ -160,7 +161,14 @@ object SnowAccumulationFeature : Listener {
                                 val belowY = targetY - 1
                                 if (belowY >= world.minHeight) {
                                     val belowType = snapshot.getBlockType(lx, belowY, lz)
+
                                     if (!cfg.allowSnowOnIce && isIce(belowType)) {
+                                        continue
+                                    }
+
+                                    // PREVENT SNOW ON NON-FULL BLOCKS:
+                                    // Slabs, stairs, and fences report 'isSolid' = true, so we must manually reject them.
+                                    if (isInvalidSnowSurface(belowType)) {
                                         continue
                                     }
                                 }
@@ -185,7 +193,6 @@ object SnowAccumulationFeature : Listener {
                                                 placements.add(SnowPlacement(world, globalX, targetY, globalZ, SnowAction.ADD_LAYER))
                                             }
                                         }
-                                        // "else" block completely removed. No more random ugly bumps on flat ice/fields.
                                     }
                                 }
                                 else if (targetType.isAir) {
@@ -260,6 +267,56 @@ object SnowAccumulationFeature : Listener {
             }
         }
         return minOf(expected, maxAllowed)
+    }
+
+    /**
+     * Rejects blocks that physically report as solid but visually do not fill a 1x1x1 volume.
+     * Prevents snow from floating in the air above stairs, slabs, fences, etc.
+     */
+    private fun isInvalidSnowSurface(material: Material): Boolean {
+        val name = material.name
+        return name.endsWith("_STAIRS") ||
+                name.endsWith("_SLAB") ||
+                name.endsWith("_FENCE") ||
+                name.endsWith("_GATE") ||
+                name.endsWith("_WALL") ||
+                name.endsWith("_SIGN") ||
+                name.endsWith("_BANNER") ||
+                name.endsWith("_TRAPDOOR") ||
+                name.endsWith("_BED") ||
+                name.endsWith("_PANE") ||
+                name.endsWith("_BUTTON") ||
+                name.endsWith("_CARPET") ||
+                name.endsWith("_PRESSURE_PLATE") ||
+                name.endsWith("_SHULKER_BOX") ||
+                name == "IRON_BARS" ||
+                name == "CHAIN" ||
+                name == "LEVER" ||
+                name == "HOPPER" ||
+                name == "CAULDRON" ||
+                name == "ANVIL" ||
+                name == "CHIPPED_ANVIL" ||
+                name == "DAMAGED_ANVIL" ||
+                name == "BELL" ||
+                name == "LANTERN" ||
+                name == "SOUL_LANTERN" ||
+                name == "CAMPFIRE" ||
+                name == "SOUL_CAMPFIRE" ||
+                name == "DAYLIGHT_DETECTOR" ||
+                name == "TURTLE_EGG" ||
+                name == "SNIFFER_EGG" ||
+                name == "POINTED_DRIPSTONE" ||
+                name == "LIGHTNING_ROD" ||
+                name == "COBWEB" ||
+                name == "SCAFFOLDING" ||
+                name == "LADDER" ||
+                name == "END_ROD" ||
+                name == "CHEST" ||
+                name == "TRAPPED_CHEST" ||
+                name == "ENDER_CHEST" ||
+                name == "BREWING_STAND" ||
+                name == "LECTERN" ||
+                name == "CONDUIT"
     }
 
     private fun isIce(material: Material): Boolean {

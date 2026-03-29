@@ -45,11 +45,4 @@ class ProviderManager : Listener {
         }
     }
 
-    @EventHandler
-    fun onPlayerJoin(event: PlayerJoinEvent) {
-        if (event.player.isOp && (config.apiKey == "YOUR_API_KEY" || config.apiKey.isBlank())) {
-            event.player.sendFormattedMessage("§cVivaldi is not configured! Run §6/s setup §cto configure AI or §6/s disable ai §cto run plugin in determenistic mode.")
-        }
-    }
-
 }
