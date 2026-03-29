@@ -14,6 +14,7 @@ import vx.vivaldi.season.SeasonManager
 import vx.vivaldi.season.biome.SeasonalBiomeManager
 
 import java.io.File
+import java.util.jar.JarFile
 
 class Vivaldi : JavaPlugin() {
 
@@ -30,6 +31,9 @@ class Vivaldi : JavaPlugin() {
     }
 
     override fun onEnable() {
+        // Extract default biomes from the plugin jar before loading them
+        saveDefaultBiomes()
+
         this.providerManager = ProviderManager()
         this.gameplayManager = GameplayManager(this)
         this.commandManager  = PaperCommandManager(this)
@@ -52,6 +56,45 @@ class Vivaldi : JavaPlugin() {
         if (this::seasonManager.isInitialized) {
             seasonManager.saveToPDC()
             logger.info("§a[Vivaldi] Season state saved successfully.")
+        }
+    }
+
+    /**
+     * Extracts all files from the "biomes" folder inside the plugin's .jar
+     * into the plugin's data folder. It will not overwrite existing files.
+     */
+    private fun saveDefaultBiomes() {
+        val biomesDir = File(dataFolder, "biomes")
+        if (!biomesDir.exists()) {
+            biomesDir.mkdirs()
+        }
+
+        try {
+            // Open the plugin's own .jar file
+            JarFile(super.getFile()).use { jar ->
+                val entries = jar.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    val name = entry.name
+
+                    // Look for everything inside the "biomes/" directory in the jar
+                    if (name.startsWith("biomes/") && !entry.isDirectory) {
+                        val outFile = File(dataFolder, name)
+
+                        // Only copy if the file doesn't exist yet (to prevent overwriting user edits)
+                        if (!outFile.exists()) {
+                            outFile.parentFile.mkdirs()
+                            jar.getInputStream(entry).use { input ->
+                                outFile.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logger.warning("Failed to extract default biomes from jar: ${e.message}")
         }
     }
 
