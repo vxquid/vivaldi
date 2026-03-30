@@ -109,9 +109,9 @@ object BiomeRegistryInterceptor : PacketListener {
                     }
                 }
             }
-            plugin.logger.info("§a[Vivaldi] Successfully built block replacement map for hardcoded leaves.")
+            plugin.logger.info("Successfully built block replacement map for hardcoded leaves.")
         } catch (e: Exception) {
-            plugin.logger.warning("§c[Vivaldi] Failed to build leaf replacement map: ${e.message}")
+            plugin.logger.warning("Failed to build leaf replacement map: ${e.message}")
         }
     }
 
@@ -227,10 +227,10 @@ object BiomeRegistryInterceptor : PacketListener {
                 normalToAlternateBiomeMap.clear()
                 normalToAlternateBiomeMap.putAll(tempNormalToAlternate)
 
-                plugin.logger.info("§a[Vivaldi] Appended $injectedCount virtual seasonal biomes for ALL seasons.")
+                plugin.logger.info("Appended $injectedCount virtual seasonal biomes for ALL seasons.")
             }
         } catch (e: Exception) {
-            plugin.logger.severe("§c[Vivaldi] Exception while processing REGISTRY_DATA: ${e.message}")
+            plugin.logger.severe("Exception while processing REGISTRY_DATA: ${e.message}")
         }
     }
 

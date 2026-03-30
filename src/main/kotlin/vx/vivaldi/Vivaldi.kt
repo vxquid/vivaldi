@@ -55,7 +55,7 @@ class Vivaldi : JavaPlugin() {
         // Гарантированное сохранение сезона перед выгрузкой миров сервером
         if (this::seasonManager.isInitialized) {
             seasonManager.saveToPDC()
-            logger.info("§a[Vivaldi] Season state saved successfully.")
+            logger.info("Season state saved successfully.")
         }
     }
 

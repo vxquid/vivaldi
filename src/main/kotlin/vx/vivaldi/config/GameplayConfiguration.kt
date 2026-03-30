@@ -35,9 +35,10 @@ class GameplayConfiguration {
         )
         var excludedBiomes: List<String> = listOf(
             "*ocean*", // Excludes all ocean variants automatically so we don't freeze the whole sea
+            "*caves*",
+            "*deep*",
+            "*volcanic*",
             "minecraft:mushroom_fields",
-            "minecraft:deep_dark",
-            "minecraft:lush_caves",
 
             // Default dimension exclusions
             "minecraft:nether_wastes",

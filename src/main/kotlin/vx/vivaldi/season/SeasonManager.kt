@@ -81,14 +81,14 @@ class SeasonManager(private val plugin: Vivaldi) {
             if (json != null) {
                 try {
                     seasonData = gson.fromJson(json, SeasonData::class.java) ?: SeasonData()
-                    plugin.logger.info("§a[Vivaldi] Loaded season data: ${seasonData.season} (${seasonData.passedTicks} ticks)")
+                    plugin.logger.info("Loaded season data: ${seasonData.season} (${seasonData.passedTicks} ticks)")
                 } catch (e: Exception) {
-                    plugin.logger.warning("§c[Vivaldi] Corrupted season data! Starting fresh.")
+                    plugin.logger.warning("Corrupted season data! Starting fresh.")
                     seasonData = SeasonData()
                 }
             }
         } else {
-            plugin.logger.info("§a[Vivaldi] No previous season data found. Starting fresh with ${seasonData.season}.")
+            plugin.logger.info("No previous season data found. Starting fresh with ${seasonData.season}.")
         }
 
         isDataLoaded = true
@@ -122,10 +122,10 @@ class SeasonManager(private val plugin: Vivaldi) {
         val event = SeasonChangeEvent(oldSeason, newSeason)
         Bukkit.getPluginManager().callEvent(event)
 
-        plugin.logger.info("§a[Vivaldi] Season has changed from $oldSeason to $newSeason!")
+        plugin.logger.info("Season has changed from $oldSeason to $newSeason!")
 
         // 2. Broadcast message to players
-        Bukkit.broadcastMessage("§6[Vivaldi] §eThe season has transitioned to §6${newSeason.name}§e!")
+        Bukkit.broadcastMessage("The season has transitioned to §6${newSeason.name}§e!")
 
         // 3. Update chunks and registry for all online players seamlessly
         updateManager.applySeasonToAllOnline()

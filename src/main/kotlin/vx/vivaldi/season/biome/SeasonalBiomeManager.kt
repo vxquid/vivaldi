@@ -61,7 +61,7 @@ class SeasonalBiomeManager {
             }
         }
 
-        plugin.logger.info("§a[Vivaldi] Successfully loaded ${seasonalBiomes.size} seasonal biomes into memory.")
+        plugin.logger.info("Successfully loaded ${seasonalBiomes.size} seasonal biomes into memory.")
     }
 
     fun getActivePaletteFor(fullKey: String, season: Season): BiomeColorPalette? {

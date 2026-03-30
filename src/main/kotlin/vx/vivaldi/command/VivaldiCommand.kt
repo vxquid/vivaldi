@@ -91,7 +91,7 @@ class VivaldiCommand : BaseCommand(), Listener {
     @CommandPermission("vivaldi.admin.season")
     fun onSeasonInfo(player: Player) {
         val current = plugin.seasonManager.currentSeason
-        player.sendFormattedMessage("§a[Vivaldi] Current active season is: §6${current.name}")
+        player.sendFormattedMessage("Current active season is: §6${current.name}")
     }
 
     @Subcommand("season set")
@@ -110,7 +110,7 @@ class VivaldiCommand : BaseCommand(), Listener {
             return
         }
 
-        player.sendFormattedMessage("§a[Vivaldi] Forcefully changing season to §6${season.name}§a...")
+        player.sendFormattedMessage("Forcefully changing season to §6${season.name}§a...")
         plugin.seasonManager.setSeason(season)
     }
 
@@ -118,7 +118,7 @@ class VivaldiCommand : BaseCommand(), Listener {
     @CommandPermission("vivaldi.admin.season")
     fun onSeasonNext(player: Player) {
         val nextSeason = plugin.seasonManager.currentSeason.next()
-        player.sendFormattedMessage("§a[Vivaldi] Advancing to the next season: §6${nextSeason.name}§a...")
+        player.sendFormattedMessage("Advancing to the next season: §6${nextSeason.name}§a...")
         plugin.seasonManager.setSeason(nextSeason)
     }
 
@@ -265,7 +265,7 @@ class VivaldiCommand : BaseCommand(), Listener {
         }
 
         if (biomes.isEmpty()) {
-            player.sendFormattedMessage("§c[Vivaldi] Biome list is empty or all biomes are excluded in config!")
+            player.sendFormattedMessage("Biome list is empty or all biomes are excluded in config!")
             return
         }
 
@@ -304,7 +304,7 @@ class VivaldiCommand : BaseCommand(), Listener {
             }.map { "${it.namespace}:${it.key}" }
 
             if (biomes.isEmpty()) {
-                player.sendFormattedMessage("§c[Vivaldi] Biome list is empty!")
+                player.sendFormattedMessage("Biome list is empty!")
                 return
             }
 
@@ -391,7 +391,7 @@ class VivaldiCommand : BaseCommand(), Listener {
                     bossBar?.removeAll()
                     queueFile.delete()
                     isRunning.set(false)
-                    admin.sendFormattedMessage("§a[Vivaldi] Biome generation successfully completed!")
+                    admin.sendFormattedMessage("Biome generation successfully completed!")
                 })
 
             } catch (e: Exception) {
