@@ -150,4 +150,5 @@ class SeasonManager(private val plugin: Vivaldi) {
             }
         }.runTaskTimer(plugin, 20L, 20L) // Run every 1 second
     }
+
 }

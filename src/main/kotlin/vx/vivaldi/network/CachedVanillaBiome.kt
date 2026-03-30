@@ -188,12 +188,14 @@ object BiomeRegistryInterceptor : PacketListener {
                             // Generate NBT for the Normal Seasonal Biome
                             val normalNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
                             normalNbt.setTag("temperature", NBTFloat(seasonalTemp)) // Inject new temp
+                            normalNbt.setTag("has_precipitation", NBTByte(1.toByte()))
                             val normalEffects = getOrCreateEffects(normalNbt)
                             injectColors(normalEffects, normalPalette)
 
                             // Generate NBT for the Alternate Seasonal Biome (used under leaves)
                             val altNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
                             altNbt.setTag("temperature", NBTFloat(seasonalTemp)) // Inject new temp
+                            altNbt.setTag("has_precipitation", NBTByte(1.toByte()))
                             val altEffects = getOrCreateEffects(altNbt)
                             injectColors(altEffects, altPalette)
 

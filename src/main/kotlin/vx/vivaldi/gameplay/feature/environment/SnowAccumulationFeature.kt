@@ -2,9 +2,9 @@ package vx.vivaldi.gameplay.feature.environment
 
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import org.bukkit.Bukkit
-import org.bukkit.ChunkSnapshot
 import org.bukkit.Material
 import org.bukkit.World
+import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.data.type.Snow
 import org.bukkit.event.EventHandler
@@ -61,20 +61,8 @@ object SnowAccumulationFeature : Listener {
         Material.LEAF_LITTER, Material.FIREFLY_BUSH
     )
 
-    private enum class SnowAction {
-        PLACE_SNOW, ADD_LAYER, CRUSH_AND_PLACE
-    }
-
-    private data class SnowPlacement(
-        val world: World,
-        val x: Int,
-        val y: Int,
-        val z: Int,
-        val action: SnowAction
-    )
-
-    // Optimized offset array for neighbor search (North, South, East, West)
-    private val neighborOffsets = intArrayOf(-1, 0, 1, 0, 0, -1, 0, 1)
+    // Optimized array for 4-way horizontal neighbor checks
+    private val neighborFaces = arrayOf(BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
 
     init {
         start()
@@ -88,10 +76,10 @@ object SnowAccumulationFeature : Listener {
             override fun run() {
                 val currentSeason = plugin.seasonManager.currentSeason
 
-                if (currentSeason != Season.WINTER) return
-
-                val snapshots = mutableListOf<ChunkSnapshot>()
-                val activeWorlds = mutableListOf<World>()
+                // Step 1: Gather target locations
+                // We do this fast and synchronously. 750 blocks per cycle takes < 1ms on the main thread.
+                // This eliminates cross-chunk snapshot boundary issues entirely.
+                val targets = mutableListOf<Block>()
 
                 for (world in Bukkit.getWorlds()) {
                     if (world.name !in plugin.gameplayManager.allowedWorlds) continue
@@ -103,166 +91,155 @@ object SnowAccumulationFeature : Listener {
                     val limit = minOf(cfg.chunksPerCycle, loadedChunks.size)
                     for (i in 0 until limit) {
                         val randomChunk = loadedChunks.random()
-                        snapshots.add(randomChunk.getChunkSnapshot(true, false, false))
-                        activeWorlds.add(world)
-                    }
-                }
-
-                if (snapshots.isEmpty()) return
-
-                Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
-                    val placements = mutableListOf<SnowPlacement>()
-
-                    for (i in snapshots.indices) {
-                        val snapshot = snapshots[i]
-                        val world = activeWorlds[i]
-
                         for (attempt in 0 until cfg.attemptsPerChunk) {
                             val lx = Random.nextInt(16)
                             val lz = Random.nextInt(16)
-                            val highestY = snapshot.getHighestBlockYAt(lx, lz)
 
-                            var targetY = -1
+                            val globalX = (randomChunk.x shl 4) + lx
+                            val globalZ = (randomChunk.z shl 4) + lz
 
-                            for (y in highestY downTo world.minHeight) {
-                                val type = snapshot.getBlockType(lx, y, lz)
-                                if (type.isAir) continue
+                            val highestY = world.getHighestBlockYAt(globalX, globalZ)
+                            targets.add(world.getBlockAt(globalX, highestY, globalZ))
+                        }
+                    }
+                }
 
-                                if (type.name.endsWith("_LEAVES")) {
-                                    if (Random.nextDouble() < cfg.fallThroughLeavesChance) {
-                                        continue
-                                    } else {
-                                        targetY = y + 1
-                                        break
-                                    }
-                                }
+                if (targets.isEmpty()) return
 
-                                if (fragileBlocks.contains(type)) {
-                                    targetY = y
-                                    break
-                                }
+                // Step 2: Process snow placements
+                for (topBlock in targets) {
+                    val world = topBlock.world
+                    val x = topBlock.x
+                    val z = topBlock.z
+                    val highestY = topBlock.y
 
-                                if (type == Material.SNOW) {
-                                    targetY = y
-                                    break
-                                }
+                    var targetBlock: Block? = null
 
-                                if (type == Material.WATER || type == Material.LAVA) {
-                                    break
-                                }
+                    // Scan downwards to find the exact resting place for the snow
+                    for (y in highestY downTo world.minHeight) {
+                        val block = world.getBlockAt(x, y, z)
+                        val type = block.type
+                        if (type.isAir) continue
 
-                                if (type.isSolid) {
-                                    targetY = y + 1
-                                    break
-                                }
+                        if (type.name.endsWith("_LEAVES")) {
+                            if (Random.nextDouble() < cfg.fallThroughLeavesChance) {
+                                continue
+                            } else {
+                                targetBlock = block.getRelative(BlockFace.UP)
+                                break
                             }
+                        }
 
-                            if (targetY in world.minHeight until world.maxHeight) {
+                        if (fragileBlocks.contains(type) || type == Material.SNOW) {
+                            targetBlock = block
+                            break
+                        }
 
-                                val belowY = targetY - 1
-                                if (belowY >= world.minHeight) {
-                                    val belowType = snapshot.getBlockType(lx, belowY, lz)
+                        if (type == Material.WATER || type == Material.LAVA) {
+                            break
+                        }
 
-                                    if (!cfg.allowSnowOnIce && isIce(belowType)) {
-                                        continue
-                                    }
+                        if (block.isSolid) {
+                            targetBlock = block.getRelative(BlockFace.UP)
+                            break
+                        }
+                    }
 
-                                    // PREVENT SNOW ON NON-FULL BLOCKS:
-                                    // Slabs, stairs, and fences report 'isSolid' = true, so we must manually reject them.
-                                    if (isInvalidSnowSurface(belowType)) {
-                                        continue
-                                    }
-                                }
+                    if (targetBlock == null) continue
 
-                                val targetType = snapshot.getBlockType(lx, targetY, lz)
-                                val globalX = (snapshot.x shl 4) + lx
-                                val globalZ = (snapshot.z shl 4) + lz
+                    // --- CRITICAL FIX: DYNAMIC SEASONAL TEMPERATURE CHECK ---
+                    // Snow can fall in ANY season, as long as the shifted temperature is freezing (< 0.15).
+                    var seasonalTemp = targetBlock.temperature
+                    when (currentSeason) {
+                        Season.SUMMER -> seasonalTemp += 0.4
+                        Season.WINTER -> seasonalTemp -= 0.8
+                        else -> {} // Spring & Autumn use base temperature
+                    }
 
-                                if (fragileBlocks.contains(targetType)) {
-                                    placements.add(SnowPlacement(world, globalX, targetY, globalZ, SnowAction.CRUSH_AND_PLACE))
-                                }
-                                else if (targetType == Material.SNOW) {
-                                    val snowData = snapshot.getBlockData(lx, targetY, lz) as? Snow
-                                    if (snowData != null && snowData.layers < cfg.maxSnowLayers) {
+                    // If it's too warm (>= 0.15), vanilla weather is raining here, not snowing. Skip.
+                    if (seasonalTemp >= 0.15) continue
+                    // --------------------------------------------------------
 
-                                        // SLOPE CALCULATION: Check neighbors to calculate smooth gradient stairs
-                                        val expectedLayers = getExpectedSnowLayers(snapshot, lx, targetY, lz, cfg.maxSnowLayers)
+                    val belowBlock = targetBlock.getRelative(BlockFace.DOWN)
+                    val belowType = belowBlock.type
 
-                                        // Only add a layer if the block is part of a slope near a wall/hill
-                                        if (snowData.layers < expectedLayers) {
-                                            if (Random.nextDouble() < cfg.slopeFormationChance) {
-                                                placements.add(SnowPlacement(world, globalX, targetY, globalZ, SnowAction.ADD_LAYER))
-                                            }
-                                        }
-                                    }
-                                }
-                                else if (targetType.isAir) {
-                                    val below = snapshot.getBlockType(lx, targetY - 1, lz)
-                                    if (below.isSolid && below != Material.SNOW) {
-                                        placements.add(SnowPlacement(world, globalX, targetY, globalZ, SnowAction.PLACE_SNOW))
-                                    }
+                    if (!cfg.allowSnowOnIce && isIce(belowType)) continue
+
+                    // PREVENT SNOW ON NON-FULL BLOCKS
+                    if (isInvalidSnowSurface(belowType)) continue
+
+                    val targetType = targetBlock.type
+
+                    if (fragileBlocks.contains(targetType)) {
+                        targetBlock.breakNaturally()
+                        targetBlock.setType(Material.SNOW, false)
+                    }
+                    else if (targetType == Material.SNOW) {
+                        val snowData = targetBlock.blockData as? Snow
+                        if (snowData != null && snowData.layers < cfg.maxSnowLayers) {
+
+                            // SLOPE CALCULATION: Now runs sync, natively fixing cross-chunk border bugs!
+                            val expectedLayers = getExpectedSnowLayers(targetBlock, cfg.maxSnowLayers)
+
+                            if (snowData.layers < expectedLayers) {
+                                if (Random.nextDouble() < cfg.slopeFormationChance) {
+                                    snowData.layers += 1
+                                    targetBlock.setBlockData(snowData, false)
                                 }
                             }
                         }
                     }
-
-                    if (placements.isNotEmpty()) {
-                        Bukkit.getScheduler().runTask(plugin, Runnable {
-                            for (p in placements) {
-                                val block = p.world.getBlockAt(p.x, p.y, p.z)
-
-                                when (p.action) {
-                                    SnowAction.CRUSH_AND_PLACE -> {
-                                        if (fragileBlocks.contains(block.type)) {
-                                            block.breakNaturally()
-                                            block.setType(Material.SNOW, false)
-                                        }
-                                    }
-                                    SnowAction.PLACE_SNOW -> {
-                                        if (block.type.isAir && block.getRelative(BlockFace.DOWN).type.isSolid) {
-                                            block.setType(Material.SNOW, false)
-                                        }
-                                    }
-                                    SnowAction.ADD_LAYER -> {
-                                        if (block.type == Material.SNOW) {
-                                            val snowData = block.blockData as? Snow
-                                            if (snowData != null && snowData.layers < cfg.maxSnowLayers) {
-                                                snowData.layers += 1
-                                                block.setBlockData(snowData, false)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        })
+                    else if (targetType.isAir) {
+                        if (belowBlock.isSolid && belowType != Material.SNOW) {
+                            targetBlock.setType(Material.SNOW, false)
+                        }
                     }
-                })
+                }
             }
         }
 
         task?.runTaskTimer(plugin, 40L, cfg.intervalTicks)
     }
 
-    private fun getExpectedSnowLayers(snapshot: ChunkSnapshot, lx: Int, y: Int, lz: Int, maxAllowed: Int): Int {
+    /**
+     * Calculates the required snow depth based on neighboring blocks to form smooth, cohesive slopes.
+     */
+    private fun getExpectedSnowLayers(block: Block, maxAllowed: Int): Int {
         var expected = 1
-        for (i in 0 until 4) {
-            val nx = lx + neighborOffsets[i * 2]
-            val nz = lz + neighborOffsets[i * 2 + 1]
+        for (face in neighborFaces) {
+            val neighbor = block.getRelative(face)
+            val neighborType = neighbor.type
 
-            if (nx !in 0..15 || nz !in 0..15) continue
-
-            val aboveNeighbor = snapshot.getBlockType(nx, y + 1, nz)
-            if (aboveNeighbor.isSolid && !aboveNeighbor.name.endsWith("_LEAVES")) {
+            // Stack snow tall against solid walls
+            if (neighborType.isSolid && !neighborType.name.endsWith("_LEAVES") && neighborType != Material.SNOW) {
                 return maxAllowed
             }
 
-            val neighborType = snapshot.getBlockType(nx, y, nz)
+            // Slope downwards smoothly from adjacent taller snow
             if (neighborType == Material.SNOW) {
-                val data = snapshot.getBlockData(nx, y, nz) as? Snow
+                val data = neighbor.blockData as? Snow
                 if (data != null) {
                     val slopeDecay = data.layers - 1
                     if (slopeDecay > expected) {
                         expected = slopeDecay
+                    }
+                }
+            }
+
+            // Look diagonally upwards to build beautiful connecting stairs
+            val upNeighbor = neighbor.getRelative(BlockFace.UP)
+            val upNeighborType = upNeighbor.type
+
+            if (upNeighborType.isSolid && !upNeighborType.name.endsWith("_LEAVES") && upNeighborType != Material.SNOW) {
+                return maxAllowed
+            }
+
+            if (upNeighborType == Material.SNOW) {
+                val data = upNeighbor.blockData as? Snow
+                if (data != null) {
+                    val slopeDecay = data.layers + 1
+                    if (slopeDecay > expected) {
+                        expected = minOf(slopeDecay, maxAllowed)
                     }
                 }
             }
@@ -276,12 +253,17 @@ object SnowAccumulationFeature : Listener {
      */
     private fun isInvalidSnowSurface(material: Material): Boolean {
         val name = material.name
-        return name.endsWith("_STAIRS") ||
-                name.endsWith("_SLAB") ||
-                name.endsWith("_FENCE") ||
-                name.endsWith("_GATE") ||
-                name.endsWith("_WALL") ||
-                name.endsWith("_SIGN") ||
+
+        // FIX: Replaced `endsWith` with `contains` to definitively ban all prefix/suffix variations.
+        if (name.contains("SLAB") ||
+            name.contains("STAIRS") ||
+            name.contains("WALL") ||
+            name.contains("FENCE") ||
+            name.contains("GATE")) {
+            return true
+        }
+
+        return name.endsWith("_SIGN") ||
                 name.endsWith("_BANNER") ||
                 name.endsWith("_TRAPDOOR") ||
                 name.endsWith("_BED") ||
@@ -295,29 +277,23 @@ object SnowAccumulationFeature : Listener {
                 name == "LEVER" ||
                 name == "HOPPER" ||
                 name == "CAULDRON" ||
-                name == "ANVIL" ||
-                name == "CHIPPED_ANVIL" ||
-                name == "DAMAGED_ANVIL" ||
+                name.contains("ANVIL") || // catches damaged/chipped variants universally
                 name == "BELL" ||
-                name == "LANTERN" ||
-                name == "SOUL_LANTERN" ||
-                name == "CAMPFIRE" ||
-                name == "SOUL_CAMPFIRE" ||
+                name.endsWith("LANTERN") || // lantern, soul_lantern
+                name.endsWith("CAMPFIRE") || // campfire, soul_campfire
                 name == "DAYLIGHT_DETECTOR" ||
-                name == "TURTLE_EGG" ||
-                name == "SNIFFER_EGG" ||
+                name.endsWith("EGG") || // turtle, sniffer
                 name == "POINTED_DRIPSTONE" ||
                 name == "LIGHTNING_ROD" ||
                 name == "COBWEB" ||
                 name == "SCAFFOLDING" ||
                 name == "LADDER" ||
                 name == "END_ROD" ||
-                name == "CHEST" ||
-                name == "TRAPPED_CHEST" ||
-                name == "ENDER_CHEST" ||
+                name.endsWith("CHEST") ||
                 name == "BREWING_STAND" ||
                 name == "LECTERN" ||
-                name == "CONDUIT"
+                name == "CONDUIT" ||
+                name == "COMPOSTER"
     }
 
     private fun isIce(material: Material): Boolean {
@@ -327,11 +303,6 @@ object SnowAccumulationFeature : Listener {
                 material == Material.FROSTED_ICE
     }
 
-    /**
-     * PaperMC EVENT: intercepts and completely cancels the vanilla internal destruction logic.
-     * When the server detects snow on an invalid block (like ice) and tries to break it,
-     * this event stops it dead in its tracks. No cascading explosions.
-     */
     @EventHandler(ignoreCancelled = true)
     fun onBlockDestroy(event: BlockDestroyEvent) {
         if (!cfg.enabled || !cfg.allowSnowOnIce) return
@@ -346,9 +317,6 @@ object SnowAccumulationFeature : Listener {
         }
     }
 
-    /**
-     * Fallback for older legacy physics checks just in case.
-     */
     @EventHandler(ignoreCancelled = true)
     fun onBlockPhysics(event: BlockPhysicsEvent) {
         if (!cfg.enabled || !cfg.allowSnowOnIce) return

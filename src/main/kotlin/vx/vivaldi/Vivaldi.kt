@@ -3,6 +3,7 @@ package vx.vivaldi
 import co.aikar.commands.PaperCommandManager
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
+import org.bukkit.Bukkit
 import org.bukkit.configuration.file.YamlConfiguration
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
@@ -59,6 +60,34 @@ class Vivaldi : JavaPlugin() {
         }
     }
 
+    // NEW: Метод проверки наличия датапака Terralith
+    private fun isTerralithInstalled(): Boolean {
+        // 1. Проверяем через официальный DatapackManager (API 1.20+)
+        try {
+            val packs = Bukkit.getDatapackManager().enabledPacks
+            if (packs.any { it.name.contains("terralith", ignoreCase = true) }) return true
+        } catch (e: Exception) {
+            // Игнорируем, если API почему-то недоступно
+        }
+
+        // 2. Проверяем физическую папку datapacks в главном мире
+        val worldFolder = Bukkit.getWorlds().firstOrNull()?.worldFolder
+        if (worldFolder != null) {
+            val datapacksFolder = File(worldFolder, "datapacks")
+            if (datapacksFolder.exists()) {
+                val hasTerralithFile = datapacksFolder.listFiles()?.any {
+                    it.name.contains("terralith", ignoreCase = true)
+                } == true
+                if (hasTerralithFile) return true
+            }
+        }
+
+        // 3. Проверяем, если Terralith установлен как плагин-обертка
+        if (Bukkit.getPluginManager().getPlugin("Terralith") != null) return true
+
+        return false
+    }
+
     /**
      * Extracts all files from the "biomes" folder inside the plugin's .jar
      * into the plugin's data folder. It will not overwrite existing files.
@@ -67,6 +96,12 @@ class Vivaldi : JavaPlugin() {
         val biomesDir = File(dataFolder, "biomes")
         if (!biomesDir.exists()) {
             biomesDir.mkdirs()
+        }
+
+        // NEW: Проверяем наличие Terralith перед распаковкой ресурсов
+        val hasTerralith = isTerralithInstalled()
+        if (hasTerralith) {
+            logger.info("Terralith datapack detected! Extracting Terralith seasonal biomes...")
         }
 
         try {
@@ -79,6 +114,12 @@ class Vivaldi : JavaPlugin() {
 
                     // Look for everything inside the "biomes/" directory in the jar
                     if (name.startsWith("biomes/") && !entry.isDirectory) {
+
+                        // NEW: Если файл/папка относится к Terralith, а датапака нет — пропускаем
+                        if (name.contains("terralith", ignoreCase = true) && !hasTerralith) {
+                            continue
+                        }
+
                         val outFile = File(dataFolder, name)
 
                         // Only copy if the file doesn't exist yet (to prevent overwriting user edits)
@@ -115,4 +156,5 @@ class Vivaldi : JavaPlugin() {
             this.sendMessage(plugin.gameplayManager.config.general.messagePrefix + " " + message)
         }
     }
+
 }
