@@ -1,4 +1,4 @@
-package vx.vivaldi.gameplay.feature
+package vx.vivaldi.gameplay.feature.environment
 
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import org.bukkit.Bukkit
@@ -6,6 +6,7 @@ import org.bukkit.ChunkSnapshot
 import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.block.BlockFace
+import org.bukkit.block.data.type.Snow
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.block.BlockPhysicsEvent
@@ -181,7 +182,7 @@ object SnowAccumulationFeature : Listener {
                                     placements.add(SnowPlacement(world, globalX, targetY, globalZ, SnowAction.CRUSH_AND_PLACE))
                                 }
                                 else if (targetType == Material.SNOW) {
-                                    val snowData = snapshot.getBlockData(lx, targetY, lz) as? org.bukkit.block.data.type.Snow
+                                    val snowData = snapshot.getBlockData(lx, targetY, lz) as? Snow
                                     if (snowData != null && snowData.layers < cfg.maxSnowLayers) {
 
                                         // SLOPE CALCULATION: Check neighbors to calculate smooth gradient stairs
@@ -224,7 +225,7 @@ object SnowAccumulationFeature : Listener {
                                     }
                                     SnowAction.ADD_LAYER -> {
                                         if (block.type == Material.SNOW) {
-                                            val snowData = block.blockData as? org.bukkit.block.data.type.Snow
+                                            val snowData = block.blockData as? Snow
                                             if (snowData != null && snowData.layers < cfg.maxSnowLayers) {
                                                 snowData.layers += 1
                                                 block.setBlockData(snowData, false)
@@ -257,7 +258,7 @@ object SnowAccumulationFeature : Listener {
 
             val neighborType = snapshot.getBlockType(nx, y, nz)
             if (neighborType == Material.SNOW) {
-                val data = snapshot.getBlockData(nx, y, nz) as? org.bukkit.block.data.type.Snow
+                val data = snapshot.getBlockData(nx, y, nz) as? Snow
                 if (data != null) {
                     val slopeDecay = data.layers - 1
                     if (slopeDecay > expected) {

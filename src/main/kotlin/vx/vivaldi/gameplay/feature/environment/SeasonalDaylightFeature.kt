@@ -1,7 +1,6 @@
-package vx.vivaldi.gameplay.feature
+package vx.vivaldi.gameplay.feature.environment
 
 import org.bukkit.Bukkit
-import org.bukkit.GameRule
 import org.bukkit.GameRules
 import org.bukkit.event.Listener
 import org.bukkit.scheduler.BukkitRunnable

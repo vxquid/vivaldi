@@ -2,13 +2,13 @@ package vx.vivaldi.config
 
 import vx.vivaldi.config.lib.annotations.Comment
 import vx.vivaldi.config.lib.annotations.Configuration
-import vx.vivaldi.gameplay.feature.PlantGrowthFeature
-import vx.vivaldi.gameplay.feature.SeasonalChunkSyncFeature
-import vx.vivaldi.gameplay.feature.SeasonalDaylightFeature
-import vx.vivaldi.gameplay.feature.SeasonalMeltingFeature
-import vx.vivaldi.gameplay.feature.SeasonalWeatherFeature
-import vx.vivaldi.gameplay.feature.SnowAccumulationFeature
-import vx.vivaldi.gameplay.feature.WaterFreezingFeature
+import vx.vivaldi.gameplay.feature.environment.PlantGrowthFeature
+import vx.vivaldi.gameplay.feature.environment.SeasonalChunkSyncFeature
+import vx.vivaldi.gameplay.feature.environment.SeasonalDaylightFeature
+import vx.vivaldi.gameplay.feature.environment.SeasonalMeltingFeature
+import vx.vivaldi.gameplay.feature.environment.SeasonalWeatherFeature
+import vx.vivaldi.gameplay.feature.environment.SnowAccumulationFeature
+import vx.vivaldi.gameplay.feature.environment.WaterFreezingFeature
 
 @Configuration("gameplay.yml")
 class GameplayConfiguration {

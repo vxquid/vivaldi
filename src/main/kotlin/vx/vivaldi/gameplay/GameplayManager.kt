@@ -6,13 +6,13 @@ import org.bukkit.event.world.WorldLoadEvent
 import vx.vivaldi.Vivaldi
 import vx.vivaldi.config.GameplayConfiguration
 import vx.vivaldi.config.lib.ConfigurationManager
-import vx.vivaldi.gameplay.feature.PlantGrowthFeature
-import vx.vivaldi.gameplay.feature.SeasonalChunkSyncFeature
-import vx.vivaldi.gameplay.feature.SeasonalDaylightFeature
-import vx.vivaldi.gameplay.feature.SeasonalMeltingFeature
-import vx.vivaldi.gameplay.feature.SeasonalWeatherFeature
-import vx.vivaldi.gameplay.feature.SnowAccumulationFeature
-import vx.vivaldi.gameplay.feature.WaterFreezingFeature
+import vx.vivaldi.gameplay.feature.environment.PlantGrowthFeature
+import vx.vivaldi.gameplay.feature.environment.SeasonalChunkSyncFeature
+import vx.vivaldi.gameplay.feature.environment.SeasonalDaylightFeature
+import vx.vivaldi.gameplay.feature.environment.SeasonalMeltingFeature
+import vx.vivaldi.gameplay.feature.environment.SeasonalWeatherFeature
+import vx.vivaldi.gameplay.feature.environment.SnowAccumulationFeature
+import vx.vivaldi.gameplay.feature.environment.WaterFreezingFeature
 
 class GameplayManager(val plugin: Vivaldi) : Listener {
 

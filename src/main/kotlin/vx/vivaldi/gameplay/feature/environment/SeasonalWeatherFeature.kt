@@ -1,4 +1,4 @@
-package vx.vivaldi.gameplay.feature
+package vx.vivaldi.gameplay.feature.environment
 
 import org.bukkit.Bukkit
 import org.bukkit.event.EventHandler
