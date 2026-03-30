@@ -34,18 +34,27 @@ class GameplayConfiguration {
             "or wildcards (e.g., '*ocean*' or 'minecraft:end_*')."
         )
         var excludedBiomes: List<String> = listOf(
-            "*ocean*", // Excludes all ocean variants automatically so we don't freeze the whole sea
-            "*caves*",
-            "*deep*",
-            "*volcanic*",
-            "minecraft:mushroom_fields",
+            // --- WILDCARDS (Covers Vanilla & Datapacks like Terralith) ---
+            "*ocean*",        // Excludes all oceans so we don't freeze the entire sea
+            "*cave*",         // Excludes lush_caves, dripstone_caves, and all Terralith 'cave/*' biomes
+            "*underground*",  // Excludes Terralith subterranean biomes (e.g., underground_dirt)
+            "*volcanic*",     // Excludes Terralith volcanic biomes (volcanic_crater, volcanic_peaks)
+            "*hot_spring*",   // Excludes Terralith hot springs (so thermal water doesn't freeze)
+            "*deep_dark*",    // Excludes the Deep Dark (safer than '*deep*' which might accidentally catch 'deep_forest')
 
-            // Default dimension exclusions
+            // --- VANILLA SPECIFIC EXCLUSIONS ---
+            "minecraft:the_void",
+            "minecraft:mushroom_fields",
+            "minecraft:ice_spikes",
+
+            // --- VANILLA NETHER DIMENSION ---
             "minecraft:nether_wastes",
             "minecraft:crimson_forest",
             "minecraft:warped_forest",
             "minecraft:soul_sand_valley",
             "minecraft:basalt_deltas",
+
+            // --- VANILLA END DIMENSION ---
             "minecraft:the_end",
             "minecraft:end_highlands",
             "minecraft:end_midlands",
@@ -60,6 +69,5 @@ class GameplayConfiguration {
         val melting = SeasonalMeltingFeature.MeltingConfig()
         val daylight = SeasonalDaylightFeature.DaylightConfig()
         val weather = SeasonalWeatherFeature.WeatherConfig()
-
     }
 }

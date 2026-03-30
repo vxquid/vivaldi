@@ -1,0 +1,74 @@
+{
+  "spring": {
+    "normal": {
+      "grassColor": "#A8D48C",
+      "foliageColor": "#B0E07E",
+      "waterColor": "#6EC1E4",
+      "waterFogColor": "#5BA9D8",
+      "skyColor": "#A0D8EF",
+      "fogColor": "#C3EBF5"
+    },
+    "alternate": {
+      "grassColor": "#B2DD95",
+      "foliageColor": "#C0F06C",
+      "waterColor": "#74CADD",
+      "waterFogColor": "#63B2E1",
+      "skyColor": "#AADEEF",
+      "fogColor": "#D0F0FA"
+    }
+  },
+  "summer": {
+    "normal": {
+      "grassColor": "#8EB971",
+      "foliageColor": "#7CC05B",
+      "waterColor": "#5AA0C8",
+      "waterFogColor": "#4A8FB2",
+      "skyColor": "#8AC6EF",
+      "fogColor": "#B0E0F5"
+    },
+    "alternate": {
+      "grassColor": "#98C27C",
+      "foliageColor": "#6BB84A",
+      "waterColor": "#64A8D0",
+      "waterFogColor": "#5398BA",
+      "skyColor": "#92CDF0",
+      "fogColor": "#BAE6FA"
+    }
+  },
+  "autumn": {
+    "normal": {
+      "grassColor": "#D99A4C",
+      "foliageColor": "#E35D41",
+      "waterColor": "#74A5C0",
+      "waterFogColor": "#5F8AA0",
+      "skyColor": "#DDB67F",
+      "fogColor": "#D3C6A4"
+    },
+    "alternate": {
+      "grassColor": "#DEA558",
+      "foliageColor": "#F0A23A",
+      "waterColor": "#7CA9C6",
+      "waterFogColor": "#6691A6",
+      "skyColor": "#DFAA70",
+      "fogColor": "#DAC9AB"
+    }
+  },
+  "winter": {
+    "normal": {
+      "grassColor": "#B5DCE0",
+      "foliageColor": "#A9D0D4",
+      "waterColor": "#8ED4E8",
+      "waterFogColor": "#7AC9DC",
+      "skyColor": "#BFDCE5",
+      "fogColor": "#D4EEF5"
+    },
+    "alternate": {
+      "grassColor": "#BFDDE3",
+      "foliageColor": "#9CCED8",
+      "waterColor": "#98D9EC",
+      "waterFogColor": "#81CEE0",
+      "skyColor": "#C4E1E8",
+      "fogColor": "#DBF1F7"
+    }
+  }
+}
