@@ -1,9 +1,8 @@
 package vx.vivaldi.gameplay.feature.environment
 
 import org.bukkit.Bukkit
-import org.bukkit.ChunkSnapshot
 import org.bukkit.Material
-import org.bukkit.World
+import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.data.type.Snow
 import org.bukkit.event.Listener
@@ -11,6 +10,7 @@ import org.bukkit.scheduler.BukkitRunnable
 import vx.vivaldi.Vivaldi.Companion.plugin
 import vx.vivaldi.config.lib.annotations.Comment
 import vx.vivaldi.season.Season
+import kotlin.random.Random
 
 object SeasonalMeltingFeature : Listener {
 
@@ -23,24 +23,15 @@ object SeasonalMeltingFeature : Listener {
         @Comment("How many chunks to randomly process per cycle")
         var chunksPerCycle: Int = 30
 
-        @Comment("Maximum number of snow/ice blocks to melt in a single chunk per cycle. Keeps melting gradual.")
-        var maxMeltedBlocksPerChunk: Int = 50
+        @Comment("How many random blocks to check in each selected chunk. Higher = faster melting. Replaces the old full-chunk scan.")
+        var attemptsPerChunk: Int = 100
     }
 
     private val cfg get() = plugin.gameplayManager.config.environment.melting
     private var task: BukkitRunnable? = null
 
-    private enum class MeltActionType {
-        MELT_SNOW_LAYER, MELT_ICE
-    }
-
-    private data class MeltAction(
-        val world: World,
-        val x: Int,
-        val y: Int,
-        val z: Int,
-        val type: MeltActionType
-    )
+    // Optimized array for 4-way horizontal neighbor checks
+    private val neighborFaces = arrayOf(BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
 
     init {
         start()
@@ -54,13 +45,9 @@ object SeasonalMeltingFeature : Listener {
             override fun run() {
                 val currentSeason = plugin.seasonManager.currentSeason
 
-                // Melting happens in all seasons EXCEPT Winter
-                if (currentSeason == Season.WINTER) return
+                // Step 1: Gather random target locations synchronously
+                val targets = mutableListOf<Block>()
 
-                val snapshots = mutableListOf<ChunkSnapshot>()
-                val activeWorlds = mutableListOf<World>()
-
-                // Collect random loaded chunks
                 for (world in Bukkit.getWorlds()) {
                     if (world.name !in plugin.gameplayManager.allowedWorlds) continue
 
@@ -70,117 +57,96 @@ object SeasonalMeltingFeature : Listener {
                     val limit = minOf(cfg.chunksPerCycle, loadedChunks.size)
                     for (i in 0 until limit) {
                         val randomChunk = loadedChunks.random()
-                        snapshots.add(randomChunk.getChunkSnapshot(true, false, false))
-                        activeWorlds.add(world)
+
+                        for (attempt in 0 until cfg.attemptsPerChunk) {
+                            val lx = Random.nextInt(16)
+                            val lz = Random.nextInt(16)
+
+                            val globalX = (randomChunk.x shl 4) + lx
+                            val globalZ = (randomChunk.z shl 4) + lz
+
+                            val highestY = world.getHighestBlockYAt(globalX, globalZ)
+
+                            // Scan downwards to find the actual exposed surface block
+                            var targetBlock: Block? = null
+                            for (y in highestY downTo world.minHeight) {
+                                val block = world.getBlockAt(globalX, y, globalZ)
+                                val type = block.type
+
+                                if (type.isAir) continue
+
+                                // FIX: Ignore leaves so snow UNDER trees can properly melt!
+                                if (type.name.endsWith("_LEAVES")) continue
+
+                                targetBlock = block
+                                break
+                            }
+
+                            if (targetBlock != null) {
+                                targets.add(targetBlock)
+                            }
+                        }
                     }
                 }
 
-                if (snapshots.isEmpty()) return
+                if (targets.isEmpty()) return
 
-                // Process asynchronously to find actual snow/ice blocks
-                Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
-                    val actions = mutableListOf<MeltAction>()
+                // Step 2: Process melting on valid targets
+                for (block in targets) {
+                    val type = block.type
 
-                    for (i in snapshots.indices) {
-                        val snapshot = snapshots[i]
-                        val world = activeWorlds[i]
-                        val chunkX = snapshot.x
-                        val chunkZ = snapshot.z
+                    // Quick exit if it's not a meltable block
+                    if (type != Material.SNOW && !isIce(type)) continue
 
-                        val chunkCandidates = mutableListOf<MeltAction>()
-
-                        // Scan the entire 16x16 surface of the chunk
-                        for (lx in 0 until 16) {
-                            for (lz in 0 until 16) {
-                                val highestY = snapshot.getHighestBlockYAt(lx, lz)
-                                var targetY = highestY + 1
-
-                                // Scan downwards to find the actual exposed surface block
-                                while (targetY >= world.minHeight) {
-                                    val type = snapshot.getBlockType(lx, targetY, lz)
-                                    if (!type.isAir) {
-                                        // Once we hit a solid block, check if it's meltable
-                                        if (type == Material.SNOW) {
-                                            chunkCandidates.add(MeltAction(world, (chunkX shl 4) + lx, targetY, (chunkZ shl 4) + lz, MeltActionType.MELT_SNOW_LAYER))
-                                        } else if (isIce(type)) {
-                                            chunkCandidates.add(MeltAction(world, (chunkX shl 4) + lx, targetY, (chunkZ shl 4) + lz, MeltActionType.MELT_ICE))
-                                        }
-                                        break // Stop digging down for this column
-                                    }
-                                    targetY--
-                                }
-                            }
-                        }
-
-                        // If we found snow/ice, we randomly pick a limited amount to melt.
-                        // This prevents the whole chunk from instantly melting, keeping it organic.
-                        if (chunkCandidates.isNotEmpty()) {
-                            chunkCandidates.shuffle()
-                            actions.addAll(chunkCandidates.take(cfg.maxMeltedBlocksPerChunk))
-                        }
+                    // --- CRITICAL FIX: DYNAMIC SEASONAL TEMPERATURE CHECK ---
+                    var seasonalTemp = block.temperature
+                    when (currentSeason) {
+                        Season.SUMMER -> seasonalTemp += 0.4
+                        Season.WINTER -> seasonalTemp -= 0.8
+                        else -> {}
                     }
 
-                    if (actions.isNotEmpty()) {
-                        Bukkit.getScheduler().runTask(plugin, Runnable {
-                            applyMelting(actions)
-                        })
-                    }
-                })
-            }
-        }
+                    // If the temperature is still freezing (< 0.15), DO NOT MELT!
+                    // This allows inherently snowy biomes (like Snowy Taiga) and high mountains
+                    // to retain their snow globally, even during Summer.
+                    if (seasonalTemp < 0.15) continue
+                    // --------------------------------------------------------
 
-        task?.runTaskTimer(plugin, 60L, cfg.intervalTicks)
-    }
-
-    private fun applyMelting(actions: List<MeltAction>) {
-        for (action in actions) {
-            // Ensure chunk is still loaded before applying changes to prevent cascading lag
-            if (!action.world.isChunkLoaded(action.x shr 4, action.z shr 4)) continue
-
-            val block = action.world.getBlockAt(action.x, action.y, action.z)
-
-            when (action.type) {
-                MeltActionType.MELT_SNOW_LAYER -> {
-                    if (block.type == Material.SNOW) {
+                    // Apply melting logic
+                    if (type == Material.SNOW) {
                         val snowData = block.blockData as? Snow
                         if (snowData != null) {
-                            // Gradually reduce snow by 1 layer at a time
                             if (snowData.layers > 1) {
                                 snowData.layers -= 1
                                 block.setBlockData(snowData, false)
                             } else {
-                                // If it's the last layer, melt it completely into air
                                 block.type = Material.AIR
                             }
                         }
-                    }
-                }
-                MeltActionType.MELT_ICE -> {
-                    if (isIce(block.type)) {
-                        // Ice only melts if it touches the shore.
-                        // Since we randomly pick from candidates, it will slowly melt from the outside in!
-                        if (isShoreline(block.world, action.x, action.y, action.z)) {
+                    } else if (isIce(type)) {
+                        // Ice only melts if it touches the shore (melts from the outside in)
+                        if (isShoreline(block)) {
                             block.type = Material.WATER
                         }
                     }
                 }
             }
         }
+
+        task?.runTaskTimer(plugin, 60L, cfg.intervalTicks)
     }
 
     /**
      * Checks if the block is touching a solid non-ice block horizontally (simulating a shore/coast).
      */
-    private fun isShoreline(world: World, x: Int, y: Int, z: Int): Boolean {
-        val faces = arrayOf(BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
-        for (face in faces) {
-            val nx = x + face.modX
-            val nz = z + face.modZ
+    private fun isShoreline(block: Block): Boolean {
+        val world = block.world
+        for (face in neighborFaces) {
+            val neighbor = block.getRelative(face)
 
-            // Do not load adjacent chunks just to check shoreline (prevents performance hits)
-            if (!world.isChunkLoaded(nx shr 4, nz shr 4)) continue
+            // Do not load adjacent chunks just to check shoreline (prevents lag spikes at chunk borders)
+            if (!world.isChunkLoaded(neighbor.x shr 4, neighbor.z shr 4)) continue
 
-            val neighbor = world.getBlockAt(nx, y, nz)
             val type = neighbor.type
 
             // If it's a solid block and NOT ice/snow/water, it's considered shore
