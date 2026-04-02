@@ -23,14 +23,14 @@ object SeasonalMeltingFeature : Listener {
         @Comment("How many chunks to randomly process per cycle")
         var chunksPerCycle: Int = 30
 
-        @Comment("How many random blocks to check in each selected chunk. Higher = faster melting. Replaces the old full-chunk scan.")
+        @Comment("How many random blocks to check in each selected chunk. Higher = faster melting.")
         var attemptsPerChunk: Int = 100
     }
 
     private val cfg get() = plugin.gameplayManager.config.environment.melting
     private var task: BukkitRunnable? = null
 
-    // Optimized array for 4-way horizontal neighbor checks
+    // Оптимизированный массив для проверки 4-х соседей по горизонтали
     private val neighborFaces = arrayOf(BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
 
     init {
@@ -44,10 +44,9 @@ object SeasonalMeltingFeature : Listener {
         task = object : BukkitRunnable() {
             override fun run() {
                 val currentSeason = plugin.seasonManager.currentSeason
-
-                // Step 1: Gather random target locations synchronously
                 val targets = mutableListOf<Block>()
 
+                // Шаг 1: Собираем случайные блоки
                 for (world in Bukkit.getWorlds()) {
                     if (world.name !in plugin.gameplayManager.allowedWorlds) continue
 
@@ -67,15 +66,13 @@ object SeasonalMeltingFeature : Listener {
 
                             val highestY = world.getHighestBlockYAt(globalX, globalZ)
 
-                            // Scan downwards to find the actual exposed surface block
                             var targetBlock: Block? = null
                             for (y in highestY downTo world.minHeight) {
                                 val block = world.getBlockAt(globalX, y, globalZ)
                                 val type = block.type
 
                                 if (type.isAir) continue
-
-                                // FIX: Ignore leaves so snow UNDER trees can properly melt!
+                                // Пропускаем листву, чтобы снег/лёд под деревьями тоже таял
                                 if (type.name.endsWith("_LEAVES")) continue
 
                                 targetBlock = block
@@ -91,14 +88,14 @@ object SeasonalMeltingFeature : Listener {
 
                 if (targets.isEmpty()) return
 
-                // Step 2: Process melting on valid targets
+                // Шаг 2: Обработка таяния
                 for (block in targets) {
                     val type = block.type
 
-                    // Quick exit if it's not a meltable block
+                    // Быстрый выход, если это не снег и не лёд
                     if (type != Material.SNOW && !isIce(type)) continue
 
-                    // --- CRITICAL FIX: DYNAMIC SEASONAL TEMPERATURE CHECK ---
+                    // --- ТЕМПЕРАТУРА И СЕЗОН ---
                     var seasonalTemp = block.temperature
                     when (currentSeason) {
                         Season.SUMMER -> seasonalTemp += 0.4
@@ -106,13 +103,37 @@ object SeasonalMeltingFeature : Listener {
                         else -> {}
                     }
 
-                    // If the temperature is still freezing (< 0.15), DO NOT MELT!
-                    // This allows inherently snowy biomes (like Snowy Taiga) and high mountains
-                    // to retain their snow globally, even during Summer.
+                    // Если все еще мороз (< 0.15), ничего не тает
                     if (seasonalTemp < 0.15) continue
-                    // --------------------------------------------------------
 
-                    // Apply melting logic
+                    // --- РАСЧЕТ ВЕРОЯТНОСТИ ТАЯНИЯ (СВЕТ + ТЕМПЕРАТУРА) ---
+
+                    // Чем выше температура над нулем (0.15), тем больше базовый шанс
+                    val tempBonus = (seasonalTemp - 0.15).coerceIn(0.1, 1.0)
+
+                    // Уровень света (0-15). Учитывает и солнце (с поправкой на время суток), и факелы.
+                    val lightLevel = block.lightLevel.toDouble()
+
+                    // Модификатор света: ночью/в темноте скорость падает до 10%, днем при солнце - 100%
+                    val lightModifier = 0.1 + (0.9 * (lightLevel / 15.0))
+
+                    var meltChance = tempBonus * lightModifier
+
+                    // Логика для льда: он тает везде, но у берегов и воды - быстрее
+                    if (isIce(type)) {
+                        // Лёд сам по себе тает чуть медленнее снега (выглядит реалистичнее)
+                        meltChance *= 0.5
+
+                        if (isEdgeOfIce(block)) {
+                            // Увеличиваем шанс в 2.5 раза, если лёд касается берега или воды (тает от краев)
+                            meltChance *= 2.5
+                        }
+                    }
+
+                    // Бросаем кубик. Если случайное число больше нашего шанса - пропускаем таяние в этот тик.
+                    if (Random.nextDouble() > meltChance) continue
+
+                    // Применяем таяние
                     if (type == Material.SNOW) {
                         val snowData = block.blockData as? Snow
                         if (snowData != null) {
@@ -124,10 +145,7 @@ object SeasonalMeltingFeature : Listener {
                             }
                         }
                     } else if (isIce(type)) {
-                        // Ice only melts if it touches the shore (melts from the outside in)
-                        if (isShoreline(block)) {
-                            block.type = Material.WATER
-                        }
+                        block.type = Material.WATER
                     }
                 }
             }
@@ -137,20 +155,21 @@ object SeasonalMeltingFeature : Listener {
     }
 
     /**
-     * Checks if the block is touching a solid non-ice block horizontally (simulating a shore/coast).
+     * Проверяет, является ли блок краем льда (касается ли он воды или земли).
+     * Это нужно, чтобы водоемы красиво таяли от краев к центру.
      */
-    private fun isShoreline(block: Block): Boolean {
+    private fun isEdgeOfIce(block: Block): Boolean {
         val world = block.world
         for (face in neighborFaces) {
             val neighbor = block.getRelative(face)
 
-            // Do not load adjacent chunks just to check shoreline (prevents lag spikes at chunk borders)
+            // Защита от прогрузки чанков
             if (!world.isChunkLoaded(neighbor.x shr 4, neighbor.z shr 4)) continue
 
             val type = neighbor.type
 
-            // If it's a solid block and NOT ice/snow/water, it's considered shore
-            if (type.isSolid && !isIce(type) && type != Material.SNOW && type != Material.SNOW_BLOCK) {
+            // Если сосед - вода ИЛИ твердый блок (земля, песок), но НЕ лёд и НЕ снег
+            if (type == Material.WATER || (type.isSolid && !isIce(type) && type != Material.SNOW && type != Material.SNOW_BLOCK)) {
                 return true
             }
         }
@@ -158,6 +177,8 @@ object SeasonalMeltingFeature : Listener {
     }
 
     private fun isIce(material: Material): Boolean {
+        // Обычный лед. Если хотите, чтобы Packed Ice и Blue Ice не таяли вообще,
+        // просто уберите их из этого списка (в ваниле они не тают).
         return material == Material.ICE ||
                 material == Material.PACKED_ICE ||
                 material == Material.BLUE_ICE ||
