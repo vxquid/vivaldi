@@ -13,7 +13,7 @@ import vx.vivaldi.gameplay.feature.environment.SeasonalMeltingFeature
 import vx.vivaldi.gameplay.feature.environment.SeasonalWeatherFeature
 import vx.vivaldi.gameplay.feature.environment.SnowAccumulationFeature
 import vx.vivaldi.gameplay.feature.environment.WaterFreezingFeature
-import vx.vivaldi.gameplay.feature.environment.forest.DynamicForest
+import vx.vivaldi.gameplay.feature.environment.forest.DynamicForestFeature
 
 class GameplayManager(val plugin: Vivaldi) : Listener {
 
@@ -23,7 +23,7 @@ class GameplayManager(val plugin: Vivaldi) : Listener {
     fun registerFeatures() {
         this.registerFeature(PlantGrowthFeature,
             SeasonalChunkSyncFeature, SeasonalMeltingFeature, SeasonalDaylightFeature, SeasonalWeatherFeature,
-            SnowAccumulationFeature, WaterFreezingFeature, DynamicForest
+            SnowAccumulationFeature, WaterFreezingFeature, DynamicForestFeature
         )
         featureListeners.forEach { plugin.server.pluginManager.registerEvents(it, plugin) }
     }

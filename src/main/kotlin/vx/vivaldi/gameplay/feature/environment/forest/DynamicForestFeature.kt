@@ -38,7 +38,7 @@ import vx.vivaldi.season.Season
 import java.io.File
 import kotlin.random.Random
 
-object DynamicForest : Listener {
+object DynamicForestFeature : Listener {
     private val gson = Gson()
     private val gsonPretty = GsonBuilder().setPrettyPrinting().create()
 
@@ -131,8 +131,10 @@ object DynamicForest : Listener {
                             if (observers.isNotEmpty() && stage != TreeStage.MATURE) {
                                 val allBlocks = parseList(pdc.get(BP_GROW_KEY, PersistentDataType.STRING)) + parseList(pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING)) + parseList(pdc.get(BP_HARDEN_KEY, PersistentDataType.STRING))
                                 allBlocks.shuffled().take(35).forEach { bp ->
-                                    val color = if (bp.mat.name.contains("LEAVES")) Particle.DustOptions(org.bukkit.Color.GREEN, 0.6f) else Particle.DustOptions(org.bukkit.Color.WHITE, 0.6f)
-                                    world.spawnParticle(Particle.DUST, baseX + bp.dx + 0.5, baseY + bp.dy + 0.5, baseZ + bp.dz + 0.5, 1, 0.0, 0.0, 0.0, 0.0, color)
+                                    if (bp.mat != Material.AIR) {
+                                        val color = if (bp.mat.name.contains("LEAVES")) Particle.DustOptions(org.bukkit.Color.GREEN, 0.6f) else Particle.DustOptions(org.bukkit.Color.WHITE, 0.6f)
+                                        world.spawnParticle(Particle.DUST, baseX + bp.dx + 0.5, baseY + bp.dy + 0.5, baseZ + bp.dz + 0.5, 1, 0.0, 0.0, 0.0, 0.0, color)
+                                    }
                                 }
                             }
                             processTreeGrowth(entity, stage, season, baseX, baseY, baseZ, 0)
@@ -154,7 +156,7 @@ object DynamicForest : Listener {
         var prog = pdc.get(PROG_KEY, PersistentDataType.INTEGER) ?: 0
 
         val (currentBpKey, defaultBlocksPerTick, nextStage) = when (stage) {
-            TreeStage.GROWING -> Triple(BP_GROW_KEY, 2, TreeStage.THICKENING)
+            TreeStage.GROWING -> Triple(BP_GROW_KEY, 3, TreeStage.THICKENING) // Чуть быстрее растёт, так как блоков больше из-за AIR
             TreeStage.THICKENING -> Triple(BP_THICKEN_KEY, 1, TreeStage.EXPANDING)
             TreeStage.EXPANDING -> Triple(BP_EXPAND_KEY, 4, TreeStage.HARDENING)
             TreeStage.HARDENING -> Triple(BP_HARDEN_KEY, 2, TreeStage.MATURE)
@@ -168,11 +170,19 @@ object DynamicForest : Listener {
             if (prog < blueprint.size) {
                 val bp = blueprint[prog]
                 val block = world.getBlockAt(bx + bp.dx, by + bp.dy, bz + bp.dz)
-                val isWood = bp.mat.name.contains("LOG") || bp.mat.name.contains("WALL") || bp.mat.name.contains("FENCE") || bp.mat.name.contains("BUTTON")
 
-                if (block.type == Material.AIR || block.type.name.contains("LEAVES") || isWood) {
-                    block.setType(bp.mat, false)
-                    setupBlockData(block)
+                // Обработка удаления временных листьев (Material.AIR)
+                if (bp.mat == Material.AIR) {
+                    // Удаляем только если это действительно лист (чтобы не снести случайно ствол)
+                    if (block.type.name.contains("LEAVES")) {
+                        block.setType(Material.AIR, false)
+                    }
+                } else {
+                    val isWood = bp.mat.name.contains("LOG") || bp.mat.name.contains("WALL") || bp.mat.name.contains("FENCE") || bp.mat.name.contains("BUTTON")
+                    if (block.type == Material.AIR || block.type.name.contains("LEAVES") || isWood) {
+                        block.setType(bp.mat, false)
+                        setupBlockData(block)
+                    }
                 }
                 prog++
             } else break
@@ -198,7 +208,10 @@ object DynamicForest : Listener {
 
         val finalMap = mutableMapOf<Triple<Int, Int, Int>, Material>()
         (structure.growPhase + structure.thickenPhase + structure.expandPhase + structure.hardenPhase).forEach {
-            finalMap[Triple(it.dx, it.dy, it.dz)] = it.mat
+            // Игнорируем блоки очистки (воздух) при моментальном спавне
+            if (it.mat != Material.AIR) {
+                finalMap[Triple(it.dx, it.dy, it.dz)] = it.mat
+            }
         }
 
         finalMap.forEach { (coords, mat) ->
@@ -236,6 +249,7 @@ object DynamicForest : Listener {
 
     private fun generateTreeStructure(blueprint: TreeBlueprint): TreeStructureData {
         val growPhase = mutableListOf<BpBlock>()
+        val sortedGrowPhase = mutableListOf<Pair<Int, BpBlock>>() // Пара (sortY, BpBlock) для умной сортировки фазы 1
         val thickenPhase = mutableListOf<BpBlock>()
         val expandPhase = mutableListOf<BpBlock>()
         val hardenPhase = mutableListOf<BpBlock>()
@@ -253,6 +267,7 @@ object DynamicForest : Listener {
         val btnMatStr = blueprint.trunk.topMaterial.replace("_FENCE", "_BUTTON").replace("_LOG", "_BUTTON")
         val btnMat = Material.getMaterial(btnMatStr) ?: Material.OAK_BUTTON
 
+        // 1. Построение узлов ствола и ветвей
         trunkNodes.add(Triple(cx, cy, cz))
         while (cy < height) {
             if (cy > 3 && cy < height - 3 && Random.nextDouble() < blueprint.trunk.bendChance) {
@@ -290,23 +305,72 @@ object DynamicForest : Listener {
             }
         }
 
+        // 2. Определение финальной листвы (чтобы временная её не переписала)
+        val finalLeafSet = mutableSetOf<Triple<Int, Int, Int>>()
+        val r = blueprint.leaves.radius
+        val ovalFactor = if (blueprint.leaves.shapeFocusY > 0) 0.6 else 1.0
+        val lStartY = (height * blueprint.leaves.startHeightPercent).toInt()
+        val canopyCenters = branchEnds.toMutableList()
+        if (trunkNodes.isNotEmpty()) canopyCenters.add(trunkNodes.last())
+
+        (trunkNodes + branchNodes).forEach { allWoodSet.add(it) }
+
+        canopyCenters.forEach { center ->
+            val isTop = (center == trunkNodes.last())
+            val cr = if (isTop) r else maxOf(1, r - 1)
+            for (dx in -cr..cr) {
+                for (dy in -cr..cr) {
+                    for (dz in -cr..cr) {
+                        if ((dx*dx + dy*dy*ovalFactor + dz*dz) <= cr*cr && Random.nextDouble() < blueprint.leaves.density) {
+                            val p = Triple(center.first + dx, center.second + dy, center.third + dz)
+                            if (p !in allWoodSet) finalLeafSet.add(p)
+                        }
+                    }
+                }
+            }
+        }
+        (trunkNodes + branchNodes).forEach { w ->
+            if (w.second >= lStartY) {
+                ALL_FACES.forEach { face ->
+                    if (Random.nextDouble() < blueprint.leaves.density * 0.8) {
+                        val p = Triple(w.first + face.modX, w.second + face.modY, w.third + face.modZ)
+                        if (p !in allWoodSet) finalLeafSet.add(p)
+                    }
+                }
+            }
+        }
+
         val logMaxY = Random.nextInt(0, blueprint.trunk.bottomMaxHeight + 1)
         val wallMaxY = (height * blueprint.trunk.middleHeightPercent).toInt()
 
+        // 3. Распределение блоков по фазам
         trunkNodes.forEach { n ->
-            // ФИКС ВИСЯЩЕГО В ВОЗДУХЕ ДЕРЕВА:
-            // Фаза 1 (Grow) ОБЯЗАНА выстраивать скелет снизу доверху.
             val baseTypePhase1 = if (n.second <= wallMaxY) middleMat else topMat
-            growPhase.add(BpBlock(n.first, n.second, n.third, baseTypePhase1))
-            allWoodSet.add(n)
+            sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, baseTypePhase1)) // Скелет
 
-            // Остальные фазы накатываются сверху
+            // ВРЕМЕННАЯ ЛИСТВА (растет вместе со стволом, затем исчезает)
+            val tempLeafMat = blueprint.getRandomLeaf()
+            for (dx in -1..1) {
+                for (dy in 0..1) {
+                    for (dz in -1..1) {
+                        if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= 2 && Random.nextDouble() < 0.6) {
+                            val p = Triple(n.first + dx, n.second + dy, n.third + dz)
+                            if (p !in allWoodSet && p !in finalLeafSet) {
+                                // Появляется на высоте ствола
+                                sortedGrowPhase.add(n.second to BpBlock(p.first, p.second, p.third, tempLeafMat))
+                                // Исчезает, когда ствол уходит на 5 блоков выше
+                                sortedGrowPhase.add((n.second + 5) to BpBlock(p.first, p.second, p.third, Material.AIR))
+                            }
+                        }
+                    }
+                }
+            }
+
             if (n.second <= wallMaxY) {
                 thickenPhase.add(BpBlock(n.first, n.second, n.third, if (n.second <= logMaxY) bottomMat else middleMat))
             }
             hardenPhase.add(BpBlock(n.first, n.second, n.third, bottomMat))
 
-            // ФИКС КНОПОК: Спавним их только в 4-й фазе, когда ствол становится прочным бревном.
             if (n.second in 2..(height-2) && Random.nextDouble() < 0.08) {
                 val face = HORIZONTAL_FACES.random()
                 hardenPhase.add(BpBlock(n.first + face.modX, n.second, n.third + face.modZ, btnMat))
@@ -324,57 +388,18 @@ object DynamicForest : Listener {
         }
 
         branchNodes.forEach { n ->
-            growPhase.add(BpBlock(n.first, n.second, n.third, topMat))
-            allWoodSet.add(n)
+            sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, topMat))
         }
 
-        val leafSet = mutableSetOf<Triple<Int, Int, Int>>()
-        val r = blueprint.leaves.radius
-        val ovalFactor = if (blueprint.leaves.shapeFocusY > 0) 0.6 else 1.0
-        val lStartY = (height * blueprint.leaves.startHeightPercent).toInt()
-
-        val canopyCenters = branchEnds.toMutableList()
-        if (trunkNodes.isNotEmpty()) canopyCenters.add(trunkNodes.last())
-
-        canopyCenters.forEach { center ->
-            val isTop = (center == trunkNodes.last())
-            val cr = if (isTop) r else maxOf(1, r - 1)
-            for (dx in -cr..cr) {
-                for (dy in -cr..cr) {
-                    for (dz in -cr..cr) {
-                        if ((dx*dx + dy*dy*ovalFactor + dz*dz) <= cr*cr && Random.nextDouble() < blueprint.leaves.density) {
-                            val p = Triple(center.first + dx, center.second + dy, center.third + dz)
-                            if (p !in allWoodSet) leafSet.add(p)
-                        }
-                    }
-                }
-            }
-        }
-
-        (trunkNodes + branchNodes).forEach { w ->
-            if (w.second >= lStartY) {
-                ALL_FACES.forEach { face ->
-                    if (Random.nextDouble() < blueprint.leaves.density * 0.8) {
-                        val p = Triple(w.first + face.modX, w.second + face.modY, w.third + face.modZ)
-                        if (p !in allWoodSet) leafSet.add(p)
-                    }
-                }
-            }
-        }
-
-        leafSet.forEach { l ->
-            if (Random.nextBoolean()) growPhase.add(BpBlock(l.first, l.second, l.third, blueprint.getRandomLeaf()))
+        // Финальная листва
+        finalLeafSet.forEach { l ->
+            if (Random.nextBoolean()) sortedGrowPhase.add(l.second to BpBlock(l.first, l.second, l.third, blueprint.getRandomLeaf()))
             else expandPhase.add(BpBlock(l.first, l.second, l.third, blueprint.getRandomLeaf()))
         }
 
-        growPhase.sortWith(Comparator { a, b ->
-            val aLeaf = a.mat.name.contains("LEAVES")
-            val bLeaf = b.mat.name.contains("LEAVES")
-            if (aLeaf && !bLeaf) return@Comparator 1
-            if (!aLeaf && bLeaf) return@Comparator -1
-            if (!aLeaf && !bLeaf) return@Comparator a.dy.compareTo(b.dy) // Ствол растет вверх
-            return@Comparator b.dy.compareTo(a.dy) // Крона нарастает вниз
-        })
+        // Сортируем 1-ю фазу по скрытому индексу sortY (именно так достигается эффект роста вверх)
+        sortedGrowPhase.sortBy { it.first }
+        growPhase.addAll(sortedGrowPhase.map { it.second })
 
         return TreeStructureData(height, growPhase, thickenPhase, expandPhase, hardenPhase)
     }
@@ -478,12 +503,10 @@ object DynamicForest : Listener {
 
         val pivotVector = block.location.toVector().add(Vector(0.5, 0.0, 0.5))
 
-        // ФИКС ФИЗИКИ: Вектор падения направлен туда, КУДА СМОТРЕЛ игрок (игнорируя Y).
         val fallDir = event.player.location.direction.apply { setY(0.0) }
         if (fallDir.lengthSquared() < 0.001) fallDir.setX(1.0)
         fallDir.normalize()
 
-        // ФИКС ОСИ ВРАЩЕНИЯ: Используем правильный вектор (0,1,0 x Взгляд), чтобы дерево падало ВПЕРЕД, а не назад
         val axis = Vector(0.0, 1.0, 0.0).crossProduct(fallDir).normalize()
         val axis3f = Vector3f(axis.x.toFloat(), axis.y.toFloat(), axis.z.toFloat())
 
@@ -507,8 +530,7 @@ object DynamicForest : Listener {
             }
         }
 
-        // АНИМАЦИЯ: Потиковая плавная физика гравитации (экспоненциальное ускорение)
-        val totalTicks = 80 // 4 секунды падения
+        val totalTicks = 80
         object : BukkitRunnable() {
             var tick = 0
             override fun run() {
@@ -533,7 +555,6 @@ object DynamicForest : Listener {
                     return
                 }
 
-                // Квадратичное ускорение (сначала медленно, потом быстрее)
                 val progress = tick.toDouble() / totalTicks
                 val easeProgress = progress * progress
                 val angle = Math.toRadians(90.0 * easeProgress)
@@ -541,11 +562,9 @@ object DynamicForest : Listener {
                 val quat = Quaternionf().fromAxisAngleRad(axis3f, angle.toFloat())
 
                 fallingBlocks.forEach { fb ->
-                    // Вычисляем новую дугу смещения и применяем
                     val rotatedOffset = fb.originalOffset.clone().rotateAroundAxis(axis, angle)
-
                     fb.display.interpolationDelay = 0
-                    fb.display.interpolationDuration = 2 // Интерполяция между 1 тиком сглаживает рывки
+                    fb.display.interpolationDuration = 2
                     fb.display.transformation = Transformation(
                         rotatedOffset.toVector3f(),
                         quat,
