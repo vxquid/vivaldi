@@ -98,7 +98,7 @@ object DynamicForestFeature : Listener {
 
         val files = blueprintsDir.listFiles { _, name -> name.endsWith(".json") }
         if (files == null || files.isEmpty()) {
-            val defaultBirch = TreeBlueprint("PALE_OAK_FENCE", Range(14, 21), TrunkRule("BIRCH_LOG", 2, 0.2, "DIORITE_WALL", 0.4, "PALE_OAK_FENCE", 0.02), BranchRule(Range(2, 5), Range(1, 3), 0.45, 0.08), LeafRule(listOf("OAK_LEAVES", "ACACIA_LEAVES"), 3, 0.65, 0.4, 0.8))
+            val defaultBirch = TreeBlueprint("PALE_OAK_FENCE", Range(12, 17), TrunkRule("BIRCH_LOG", 2, 0.2, "DIORITE_WALL", 0.4, "PALE_OAK_FENCE", 0.02), BranchRule(Range(2, 5), Range(1, 3), 0.45, 0.08), LeafRule(listOf("OAK_LEAVES", "ACACIA_LEAVES"), 3, 0.65, 0.4, 0.8))
             val defaultOak = TreeBlueprint("OAK_FENCE", Range(10, 16), TrunkRule("OAK_LOG", 3, 0.4, "GRANITE_WALL", 0.45, "OAK_FENCE", 0.15), BranchRule(Range(4, 7), Range(2, 4), 0.35, 0.15), LeafRule(listOf("OAK_LEAVES", "ACACIA_LEAVES"), 4, 0.75, 0.35, 0.0))
             File(blueprintsDir, "birch.json").writeText(gsonPretty.toJson(defaultBirch))
             File(blueprintsDir, "oak.json").writeText(gsonPretty.toJson(defaultOak))
@@ -156,7 +156,7 @@ object DynamicForestFeature : Listener {
         var prog = pdc.get(PROG_KEY, PersistentDataType.INTEGER) ?: 0
 
         val (currentBpKey, defaultBlocksPerTick, nextStage) = when (stage) {
-            TreeStage.GROWING -> Triple(BP_GROW_KEY, 3, TreeStage.THICKENING) // Чуть быстрее растёт, так как блоков больше из-за AIR
+            TreeStage.GROWING -> Triple(BP_GROW_KEY, 3, TreeStage.THICKENING)
             TreeStage.THICKENING -> Triple(BP_THICKEN_KEY, 1, TreeStage.EXPANDING)
             TreeStage.EXPANDING -> Triple(BP_EXPAND_KEY, 4, TreeStage.HARDENING)
             TreeStage.HARDENING -> Triple(BP_HARDEN_KEY, 2, TreeStage.MATURE)
@@ -171,9 +171,7 @@ object DynamicForestFeature : Listener {
                 val bp = blueprint[prog]
                 val block = world.getBlockAt(bx + bp.dx, by + bp.dy, bz + bp.dz)
 
-                // Обработка удаления временных листьев (Material.AIR)
                 if (bp.mat == Material.AIR) {
-                    // Удаляем только если это действительно лист (чтобы не снести случайно ствол)
                     if (block.type.name.contains("LEAVES")) {
                         block.setType(Material.AIR, false)
                     }
@@ -208,7 +206,6 @@ object DynamicForestFeature : Listener {
 
         val finalMap = mutableMapOf<Triple<Int, Int, Int>, Material>()
         (structure.growPhase + structure.thickenPhase + structure.expandPhase + structure.hardenPhase).forEach {
-            // Игнорируем блоки очистки (воздух) при моментальном спавне
             if (it.mat != Material.AIR) {
                 finalMap[Triple(it.dx, it.dy, it.dz)] = it.mat
             }
@@ -249,7 +246,7 @@ object DynamicForestFeature : Listener {
 
     private fun generateTreeStructure(blueprint: TreeBlueprint): TreeStructureData {
         val growPhase = mutableListOf<BpBlock>()
-        val sortedGrowPhase = mutableListOf<Pair<Int, BpBlock>>() // Пара (sortY, BpBlock) для умной сортировки фазы 1
+        val sortedGrowPhase = mutableListOf<Pair<Int, BpBlock>>()
         val thickenPhase = mutableListOf<BpBlock>()
         val expandPhase = mutableListOf<BpBlock>()
         val hardenPhase = mutableListOf<BpBlock>()
@@ -267,7 +264,6 @@ object DynamicForestFeature : Listener {
         val btnMatStr = blueprint.trunk.topMaterial.replace("_FENCE", "_BUTTON").replace("_LOG", "_BUTTON")
         val btnMat = Material.getMaterial(btnMatStr) ?: Material.OAK_BUTTON
 
-        // 1. Построение узлов ствола и ветвей
         trunkNodes.add(Triple(cx, cy, cz))
         while (cy < height) {
             if (cy > 3 && cy < height - 3 && Random.nextDouble() < blueprint.trunk.bendChance) {
@@ -305,7 +301,6 @@ object DynamicForestFeature : Listener {
             }
         }
 
-        // 2. Определение финальной листвы (чтобы временная её не переписала)
         val finalLeafSet = mutableSetOf<Triple<Int, Int, Int>>()
         val r = blueprint.leaves.radius
         val ovalFactor = if (blueprint.leaves.shapeFocusY > 0) 0.6 else 1.0
@@ -343,23 +338,30 @@ object DynamicForestFeature : Listener {
         val logMaxY = Random.nextInt(0, blueprint.trunk.bottomMaxHeight + 1)
         val wallMaxY = (height * blueprint.trunk.middleHeightPercent).toInt()
 
-        // 3. Распределение блоков по фазам
         trunkNodes.forEach { n ->
             val baseTypePhase1 = if (n.second <= wallMaxY) middleMat else topMat
-            sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, baseTypePhase1)) // Скелет
+            sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, baseTypePhase1))
 
-            // ВРЕМЕННАЯ ЛИСТВА (растет вместе со стволом, затем исчезает)
+            // ВРЕМЕННАЯ ЛИСТВА (ИСПРАВЛЕНО: у земли только строго сверху, выше - крестом)
             val tempLeafMat = blueprint.getRandomLeaf()
             for (dx in -1..1) {
                 for (dy in 0..1) {
                     for (dz in -1..1) {
-                        if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= 2 && Random.nextDouble() < 0.6) {
+                        val isCore = (dx == 0 && dz == 0)
+                        val isCross = (Math.abs(dx) + Math.abs(dz) <= 1)
+                        var shouldSpawn = false
+
+                        if (n.second < 3) {
+                            if (isCore && dy == 1 && Random.nextDouble() < 0.8) shouldSpawn = true
+                        } else {
+                            if (isCross && Random.nextDouble() < 0.5) shouldSpawn = true
+                        }
+
+                        if (shouldSpawn) {
                             val p = Triple(n.first + dx, n.second + dy, n.third + dz)
                             if (p !in allWoodSet && p !in finalLeafSet) {
-                                // Появляется на высоте ствола
                                 sortedGrowPhase.add(n.second to BpBlock(p.first, p.second, p.third, tempLeafMat))
-                                // Исчезает, когда ствол уходит на 5 блоков выше
-                                sortedGrowPhase.add((n.second + 5) to BpBlock(p.first, p.second, p.third, Material.AIR))
+                                sortedGrowPhase.add((n.second + 4) to BpBlock(p.first, p.second, p.third, Material.AIR))
                             }
                         }
                     }
@@ -391,13 +393,11 @@ object DynamicForestFeature : Listener {
             sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, topMat))
         }
 
-        // Финальная листва
         finalLeafSet.forEach { l ->
             if (Random.nextBoolean()) sortedGrowPhase.add(l.second to BpBlock(l.first, l.second, l.third, blueprint.getRandomLeaf()))
             else expandPhase.add(BpBlock(l.first, l.second, l.third, blueprint.getRandomLeaf()))
         }
 
-        // Сортируем 1-ю фазу по скрытому индексу sortY (именно так достигается эффект роста вверх)
         sortedGrowPhase.sortBy { it.first }
         growPhase.addAll(sortedGrowPhase.map { it.second })
 
