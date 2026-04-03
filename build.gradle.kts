@@ -1,7 +1,7 @@
 import xyz.jpenilla.resourcefactory.bukkit.BukkitPluginYaml
 
 plugins {
-    kotlin("jvm") version "2.0.0"
+    kotlin("jvm") version "2.2.0"
     id("io.papermc.paperweight.userdev") version "2.0.0-beta.17"
     id("xyz.jpenilla.run-paper") version "2.3.1"
     id("xyz.jpenilla.resource-factory-bukkit-convention") version "1.3.0"
@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "vivaldi"
-version = "1.0.0"
+version = "1.0.1"
 description = "Simulating the living world."
 
 bukkitPluginYaml {

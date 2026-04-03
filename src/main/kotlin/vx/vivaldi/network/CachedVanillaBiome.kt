@@ -50,7 +50,7 @@ object BiomeRegistryInterceptor : PacketListener {
     private val vanillaToSeasonalNormalMap = ConcurrentHashMap<Int, Map<Season, Int>>()
 
     // Maps: [Seasonal Normal Biome Network ID] ->[Seasonal Alternate Biome Network ID]
-    // Alternate biomes are used specifically under tree leaves to create a "shadow" or varied depth effect.
+    // Alternate biomes are used specifically under forest leaves to create a "shadow" or varied depth effect.
     private val normalToAlternateBiomeMap = ConcurrentHashMap<Int, Int>()
 
     // Maps:[Hardcoded Leaf BlockState Global ID] -> [Oak Leaf BlockState Global ID]

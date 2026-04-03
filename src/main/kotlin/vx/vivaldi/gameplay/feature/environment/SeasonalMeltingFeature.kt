@@ -21,7 +21,7 @@ object SeasonalMeltingFeature : Listener {
         var intervalTicks: Long = 20L
 
         @Comment("How many chunks to randomly process per cycle")
-        var chunksPerCycle: Int = 30
+        var chunksPerCycle: Int = 64
 
         @Comment("How many random blocks to check in each selected chunk. Higher = faster melting.")
         var attemptsPerChunk: Int = 100

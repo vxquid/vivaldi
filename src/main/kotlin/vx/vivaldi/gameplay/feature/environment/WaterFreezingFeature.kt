@@ -168,7 +168,7 @@ object WaterFreezingFeature : Listener {
                                         }
                                     } else {
                                         // Air, grass, flowers, vines, etc., reset the thickness counter,
-                                        // because under a bridge (or tree) there is usually an air gap!
+                                        // because under a bridge (or forest) there is usually an air gap!
                                         solidThickness = 0
                                     }
                                 }

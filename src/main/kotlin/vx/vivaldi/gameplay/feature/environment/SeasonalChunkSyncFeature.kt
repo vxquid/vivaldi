@@ -44,7 +44,7 @@ object SeasonalChunkSyncFeature : Listener {
         var maxGrassCluster: Int = 7
     }
 
-    // You might need to adjust the getter path if you renamed it in your config class tree
+    // You might need to adjust the getter path if you renamed it in your config class forest
     private val cfg get() = plugin.gameplayManager.config.environment.repopulator
 
     // PDC key to track which season the chunk was last synchronized with
