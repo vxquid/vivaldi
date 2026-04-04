@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "vivaldi"
-version = "1.0.1"
+version = "1.0.2"
 description = "Simulating the living world."
 
 bukkitPluginYaml {
