@@ -24,6 +24,7 @@ import org.bukkit.event.Listener
 import org.bukkit.event.block.Action
 import org.bukkit.event.block.BlockBreakEvent
 import org.bukkit.event.player.PlayerInteractEvent
+import org.bukkit.event.world.ChunkLoadEvent
 import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
@@ -58,8 +59,17 @@ object DynamicForestFeature : Listener {
     private val BP_HARDEN_KEY = NamespacedKey(plugin, "df_bp_harden")
     private val PROG_KEY = NamespacedKey(plugin, "df_prog")
 
+    private val REPLACED_TAG = NamespacedKey(plugin, "df_chunk_replaced")
+
     private val HORIZONTAL_FACES = listOf(BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
     private val ALL_FACES = HORIZONTAL_FACES + listOf(BlockFace.UP, BlockFace.DOWN)
+
+    private val SOIL_BLOCKS = setOf(
+        Material.DIRT, Material.GRASS_BLOCK, Material.PODZOL,
+        Material.MOSS_BLOCK, Material.COARSE_DIRT, Material.ROOTED_DIRT,
+        Material.MYCELIUM, Material.SNOW_BLOCK, Material.DIRT_PATH, Material.FARMLAND
+    )
+
     private var task: BukkitRunnable? = null
 
     enum class TreeStage { GROWING, THICKENING, EXPANDING, HARDENING, MATURE }
@@ -111,14 +121,15 @@ object DynamicForestFeature : Listener {
 
         val files = blueprintsDir.listFiles { _, name -> name.endsWith(".json") }
         if (files == null || files.isEmpty()) {
-            val defaultBirch = TreeBlueprint("PALE_OAK_FENCE", Range(12, 17), Range(0, 2), TrunkRule("BIRCH_WOOD", 2, 0.2, "DIORITE_WALL", 0.4, "PALE_OAK_FENCE", 0.02, "ANDESITE_STAIRS"), BranchRule(Range(2, 5), Range(1, 3), 0.45, 0.08), LeafRule(listOf("OAK_LEAVES", "ACACIA_LEAVES"), 3, 0.65, 0.4, 0.8, "OVAL"))
+            val defaultBirch = TreeBlueprint("PALE_OAK_FENCE", Range(12, 17), Range(0, 2), TrunkRule("BIRCH_WOOD", 2, 0.2, "DIORITE_WALL", 0.4, "PALE_OAK_FENCE", 0.02, "ANDESITE_STAIRS"), BranchRule(Range(2, 5), Range(1, 3), 0.45, 0.08), LeafRule(listOf("OAK_LEAVES", "JUNGLE_LEAVES"), 3, 0.65, 0.4, 0.8, "OVAL"))
 
             val appleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvMTdlYTI3OGQ2MjI1YzQ0N2M1OTQzZDY1Mjc5OGQwYmJiZDE0MTg0MzRjZThjNTRjNTRmZGFjNzk5OTRkZGQ2YyJ9fX0="
             val goldenAppleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZTkyZWFhY2QyOTBlYWQzN2ViMWEyMDJhYzczNjdmMzJiZTc0Y2Y0YWM3NzIzZTA2N2M0NjU4YmY2MmMzZGJkNiJ9fX0="
 
-            val defaultOak = TreeBlueprint("OAK_FENCE", Range(10, 16), Range(0, 3), TrunkRule("OAK_WOOD", 3, 0.4, "GRANITE_WALL", 0.45, "OAK_FENCE", 0.15, "OAK_STAIRS"), BranchRule(Range(4, 7), Range(2, 4), 0.35, 0.15), LeafRule(listOf("OAK_LEAVES", "ACACIA_LEAVES"), 4, 0.75, 0.35, 0.0, "OVAL"), listOf(
-                FruitRule(appleBase64, "APPLE", 0.04, 0.6),
-                FruitRule(goldenAppleBase64, "GOLDEN_APPLE", 0.005, 1.0)
+            // Обновлённый дуб (DARK_OAK_FENCE, высота 14-22, яблоки 1.5%)
+            val defaultOak = TreeBlueprint("DARK_OAK_FENCE", Range(14, 22), Range(0, 3), TrunkRule("OAK_WOOD", 3, 0.4, "DARK_OAK_FENCE", 0.45, "DARK_OAK_FENCE", 0.15, "DARK_OAK_STAIRS"), BranchRule(Range(4, 7), Range(2, 4), 0.35, 0.15), LeafRule(listOf("OAK_LEAVES", "OAK_LEAVES", "JUNGLE_LEAVES"), 4, 0.75, 0.35, 0.0, "OVAL"), listOf(
+                FruitRule(appleBase64, "APPLE", 0.015, 0.6),
+                FruitRule(goldenAppleBase64, "GOLDEN_APPLE", 0.001, 1.0)
             ))
 
             val defaultSpruce = TreeBlueprint("SPRUCE_FENCE", Range(14, 20), Range(0, 1), TrunkRule("SPRUCE_WOOD", 3, 0.3, "COBBLESTONE_WALL", 0.5, "SPRUCE_FENCE", 0.05, "SPRUCE_STAIRS"), BranchRule(Range(3, 6), Range(1, 2), 0.25, 0.1), LeafRule(listOf("SPRUCE_LEAVES"), 4, 0.85, 0.2, 0.0, "CONE"))
@@ -183,7 +194,7 @@ object DynamicForestFeature : Listener {
     }
 
     private fun processTreeGrowth(marker: Marker, stage: TreeStage, season: Season, bx: Int, by: Int, bz: Int, forcedSteps: Int) {
-        if (season == Season.WINTER && stage != TreeStage.MATURE) return
+        if (season == Season.WINTER && stage != TreeStage.MATURE && forcedSteps == 0) return
         val pdc = marker.persistentDataContainer
         val world = marker.world
         var prog = pdc.get(PROG_KEY, PersistentDataType.INTEGER) ?: 0
@@ -223,6 +234,56 @@ object DynamicForestFeature : Listener {
             pdc.set(TREE_STAGE_KEY, PersistentDataType.STRING, nextStage.name)
             pdc.set(PROG_KEY, PersistentDataType.INTEGER, 0)
         } else pdc.set(PROG_KEY, PersistentDataType.INTEGER, prog)
+    }
+
+    private fun fastForwardTree(marker: Marker, percent: Double) {
+        val pdc = marker.persistentDataContainer
+
+        val grow = parseList(pdc.get(BP_GROW_KEY, PersistentDataType.STRING))
+        val thicken = parseList(pdc.get(BP_THICKEN_KEY, PersistentDataType.STRING))
+        val expand = parseList(pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING))
+        val harden = parseList(pdc.get(BP_HARDEN_KEY, PersistentDataType.STRING))
+
+        val total = grow.size + thicken.size + expand.size + harden.size
+        var stepsLeft = (total * percent).toInt()
+
+        val bx = pdc.get(TREE_BASE_X, PersistentDataType.INTEGER) ?: marker.location.blockX
+        val by = pdc.get(TREE_BASE_Y, PersistentDataType.INTEGER) ?: marker.location.blockY
+        val bz = pdc.get(TREE_BASE_Z, PersistentDataType.INTEGER) ?: marker.location.blockZ
+
+        while (stepsLeft > 0) {
+            val stageStr = pdc.get(TREE_STAGE_KEY, PersistentDataType.STRING) ?: break
+            if (stageStr == TreeStage.MATURE.name) break
+
+            val stage = TreeStage.valueOf(stageStr)
+            val list = when (stage) {
+                TreeStage.GROWING -> grow
+                TreeStage.THICKENING -> thicken
+                TreeStage.EXPANDING -> expand
+                TreeStage.HARDENING -> harden
+                else -> emptyList()
+            }
+
+            val prog = pdc.get(PROG_KEY, PersistentDataType.INTEGER) ?: 0
+            val remainingInPhase = list.size - prog
+
+            if (remainingInPhase <= 0) {
+                val nextStage = when (stage) {
+                    TreeStage.GROWING -> TreeStage.THICKENING
+                    TreeStage.THICKENING -> TreeStage.EXPANDING
+                    TreeStage.EXPANDING -> TreeStage.HARDENING
+                    TreeStage.HARDENING -> TreeStage.MATURE
+                    TreeStage.MATURE -> TreeStage.MATURE
+                }
+                pdc.set(TREE_STAGE_KEY, PersistentDataType.STRING, nextStage.name)
+                pdc.set(PROG_KEY, PersistentDataType.INTEGER, 0)
+                continue
+            }
+
+            val step = minOf(stepsLeft, remainingInPhase)
+            processTreeGrowth(marker, stage, Season.SPRING, bx, by, bz, step)
+            stepsLeft -= step
+        }
     }
 
     private fun spawnDynamicTreeBase(baseBlock: Block, blueprintId: String) {
@@ -728,6 +789,109 @@ object DynamicForestFeature : Listener {
                 block.world.playSound(block.location, Sound.BLOCK_CAVE_VINES_PICK_BERRIES, 1f, 1f)
                 Material.getMaterial(fruit.dropMaterial)?.let {
                     block.world.dropItemNaturally(block.location.add(0.5, 0.5, 0.5), ItemStack(it))
+                }
+            }
+        }
+    }
+
+    @EventHandler
+    fun onChunkLoad(event: ChunkLoadEvent) {
+        val chunk = event.chunk
+        if (chunk.world.name !in plugin.gameplayManager.allowedWorlds) return
+
+        val pdc = chunk.persistentDataContainer
+        Bukkit.getScheduler().runTaskLater(plugin, Runnable {
+            if (!chunk.isLoaded) return@Runnable
+            if (pdc.has(REPLACED_TAG, PersistentDataType.BYTE)) return@Runnable
+            pdc.set(REPLACED_TAG, PersistentDataType.BYTE, 1.toByte())
+
+            replaceTreesInChunk(chunk)
+        }, 1L)
+    }
+
+    private fun replaceTreesInChunk(chunk: org.bukkit.Chunk) {
+        val roots = mutableListOf<Block>()
+        val world = chunk.world
+
+        for (x in 0..15) {
+            for (z in 0..15) {
+                val worldX = chunk.x * 16 + x
+                val worldZ = chunk.z * 16 + z
+                val highest = world.getHighestBlockYAt(worldX, worldZ)
+
+                for (y in highest downTo 50) {
+                    val block = chunk.getBlock(x, y, z)
+                    if (block.type.name.endsWith("_LOG")) {
+                        val below = block.getRelative(BlockFace.DOWN).type
+                        if (below in SOIL_BLOCKS) {
+                            roots.add(block)
+                            break
+                        }
+                    } else if (block.type.isSolid && block.type !in SOIL_BLOCKS && !block.type.name.contains("LEAVES") && !block.type.name.contains("WOOD")) {
+                        break
+                    }
+                }
+            }
+        }
+
+        for (root in roots) {
+            val type = root.type
+            if (!type.name.endsWith("_LOG")) continue
+
+            val blueprintId = when (type) {
+                Material.BIRCH_LOG -> "birch"
+                Material.SPRUCE_LOG -> "spruce"
+                Material.OAK_LOG -> "oak"
+                else -> continue
+            }
+
+            val leavesMats = when (type) {
+                Material.OAK_LOG -> listOf(Material.OAK_LEAVES)
+                Material.BIRCH_LOG -> listOf(Material.BIRCH_LEAVES)
+                Material.SPRUCE_LOG -> listOf(Material.SPRUCE_LEAVES)
+                else -> emptyList()
+            }
+
+            removeVanillaTree(root, type, leavesMats)
+            spawnDynamicTreeBase(root, blueprintId)
+
+            val marker = root.world.getNearbyEntities(root.location.add(0.5, 0.0, 0.5), 0.5, 0.5, 0.5)
+                .filterIsInstance<Marker>()
+                .firstOrNull { it.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING) }
+
+            if (marker != null) {
+                // Изменено на 80-100% созревания
+                val percent = Random.nextDouble(0.80, 1.00)
+                fastForwardTree(marker, percent)
+            }
+        }
+    }
+
+    private fun removeVanillaTree(start: Block, logMat: Material, leavesMats: List<Material>) {
+        val queue = ArrayDeque<Block>()
+        val visited = mutableSetOf<Block>()
+        queue.add(start)
+        visited.add(start)
+
+        var count = 0
+        while(queue.isNotEmpty() && count < 1000) {
+            val b = queue.removeFirst()
+            b.setType(Material.AIR, false)
+
+            val up = b.getRelative(BlockFace.UP)
+            if (up.type == Material.SNOW) up.setType(Material.AIR, false)
+
+            count++
+
+            for (face in ALL_FACES) {
+                val rel = b.getRelative(face)
+                if (!rel.chunk.isLoaded) continue
+                if (rel !in visited) {
+                    val type = rel.type
+                    if (type == logMat || type in leavesMats) {
+                        visited.add(rel)
+                        queue.add(rel)
+                    }
                 }
             }
         }
