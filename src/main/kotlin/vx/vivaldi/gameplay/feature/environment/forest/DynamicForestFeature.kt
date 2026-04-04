@@ -126,7 +126,6 @@ object DynamicForestFeature : Listener {
             val appleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvMTdlYTI3OGQ2MjI1YzQ0N2M1OTQzZDY1Mjc5OGQwYmJiZDE0MTg0MzRjZThjNTRjNTRmZGFjNzk5OTRkZGQ2YyJ9fX0="
             val goldenAppleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZTkyZWFhY2QyOTBlYWQzN2ViMWEyMDJhYzczNjdmMzJiZTc0Y2Y0YWM3NzIzZTA2N2M0NjU4YmY2MmMzZGJkNiJ9fX0="
 
-            // Обновлённый дуб (DARK_OAK_FENCE, высота 14-22, яблоки 1.5%)
             val defaultOak = TreeBlueprint("DARK_OAK_FENCE", Range(14, 22), Range(0, 3), TrunkRule("OAK_WOOD", 3, 0.4, "DARK_OAK_FENCE", 0.45, "DARK_OAK_FENCE", 0.15, "DARK_OAK_STAIRS"), BranchRule(Range(4, 7), Range(2, 4), 0.35, 0.15), LeafRule(listOf("OAK_LEAVES", "OAK_LEAVES", "JUNGLE_LEAVES"), 4, 0.75, 0.35, 0.0, "OVAL"), listOf(
                 FruitRule(appleBase64, "APPLE", 0.015, 0.6),
                 FruitRule(goldenAppleBase64, "GOLDEN_APPLE", 0.001, 1.0)
@@ -134,9 +133,12 @@ object DynamicForestFeature : Listener {
 
             val defaultSpruce = TreeBlueprint("SPRUCE_FENCE", Range(14, 20), Range(0, 1), TrunkRule("SPRUCE_WOOD", 3, 0.3, "COBBLESTONE_WALL", 0.5, "SPRUCE_FENCE", 0.05, "SPRUCE_STAIRS"), BranchRule(Range(3, 6), Range(1, 2), 0.25, 0.1), LeafRule(listOf("SPRUCE_LEAVES"), 4, 0.85, 0.2, 0.0, "CONE"))
 
+            val defaultAcacia = TreeBlueprint("ACACIA_FENCE", Range(13, 20), Range(0, 2), TrunkRule("ACACIA_WOOD", 2, 0.1, "TUFF_WALL", 0.55, "ACACIA_FENCE", 0.25, "TUFF_STAIRS"), BranchRule(Range(3, 6), Range(3, 5), 0.4, 0.15), LeafRule(listOf("ACACIA_LEAVES"), 4, 0.8, 0.6, 0.0, "FLAT"))
+
             File(blueprintsDir, "birch.json").writeText(gsonPretty.toJson(defaultBirch))
             File(blueprintsDir, "oak.json").writeText(gsonPretty.toJson(defaultOak))
             File(blueprintsDir, "spruce.json").writeText(gsonPretty.toJson(defaultSpruce))
+            File(blueprintsDir, "acacia.json").writeText(gsonPretty.toJson(defaultAcacia))
         }
 
         blueprints.clear()
@@ -421,6 +423,8 @@ object DynamicForestFeature : Listener {
         val r = blueprint.leaves.radius
         val ovalFactor = if (blueprint.leaves.shapeFocusY > 0) 0.6 else 1.0
         val isCone = blueprint.leaves.shape.equals("CONE", true)
+        val isFlat = blueprint.leaves.shape.equals("FLAT", true)
+
         val lStartY = (height * blueprint.leaves.startHeightPercent).toInt()
         val canopyCenters = branchEnds.toMutableList()
         if (trunkNodes.isNotEmpty()) canopyCenters.add(trunkNodes.last())
@@ -433,7 +437,15 @@ object DynamicForestFeature : Listener {
             for (dx in -cr..cr) {
                 for (dy in -cr..cr) {
                     for (dz in -cr..cr) {
-                        if (isCone) {
+                        if (isFlat) {
+                            if (dy in -1..1) {
+                                val maxR = if (dy == 0) cr.toDouble() else cr - 1.5
+                                if (maxR > 0 && dx*dx + dz*dz <= maxR*maxR && Random.nextDouble() < blueprint.leaves.density) {
+                                    val p = Triple(center.first + dx, center.second + dy, center.third + dz)
+                                    if (p !in allWoodSet) finalLeafSet.add(p)
+                                }
+                            }
+                        } else if (isCone) {
                             val distY = (dy + cr).toDouble() / (cr * 2)
                             val maxR = cr * (1.0 - distY)
                             if (dx*dx + dz*dz <= maxR*maxR && Random.nextDouble() < blueprint.leaves.density) {
@@ -452,7 +464,7 @@ object DynamicForestFeature : Listener {
         }
 
         (trunkNodes + branchNodes).forEach { w ->
-            if (w.second >= lStartY) {
+            if (w.second >= lStartY && !isFlat) { // Flat canopies don't get random trunk leaves
                 ALL_FACES.forEach { face ->
                     if (Random.nextDouble() < blueprint.leaves.density * 0.8) {
                         val p = Triple(w.first + face.modX, w.second + face.modY, w.third + face.modZ)
@@ -469,25 +481,27 @@ object DynamicForestFeature : Listener {
             val baseTypePhase1 = if (n.second <= wallMaxY) middleMat else topMat
             sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, baseTypePhase1))
 
-            val tempLeafMat = blueprint.getRandomLeaf()
-            for (dx in -1..1) {
-                for (dy in 0..1) {
-                    for (dz in -1..1) {
-                        val isCore = (dx == 0 && dz == 0)
-                        val isCross = (Math.abs(dx) + Math.abs(dz) <= 1)
-                        var shouldSpawn = false
+            if (!isFlat) {
+                val tempLeafMat = blueprint.getRandomLeaf()
+                for (dx in -1..1) {
+                    for (dy in 0..1) {
+                        for (dz in -1..1) {
+                            val isCore = (dx == 0 && dz == 0)
+                            val isCross = (Math.abs(dx) + Math.abs(dz) <= 1)
+                            var shouldSpawn = false
 
-                        if (n.second < 3) {
-                            if (isCore && dy == 1 && Random.nextDouble() < 0.8) shouldSpawn = true
-                        } else {
-                            if (isCross && Random.nextDouble() < 0.5) shouldSpawn = true
-                        }
+                            if (n.second < 3) {
+                                if (isCore && dy == 1 && Random.nextDouble() < 0.8) shouldSpawn = true
+                            } else {
+                                if (isCross && Random.nextDouble() < 0.5) shouldSpawn = true
+                            }
 
-                        if (shouldSpawn) {
-                            val p = Triple(n.first + dx, n.second + dy, n.third + dz)
-                            if (p !in allWoodSet && p !in finalLeafSet) {
-                                sortedGrowPhase.add(n.second to BpBlock(p.first, p.second, p.third, tempLeafMat))
-                                sortedGrowPhase.add((n.second + 4) to BpBlock(p.first, p.second, p.third, Material.AIR))
+                            if (shouldSpawn) {
+                                val p = Triple(n.first + dx, n.second + dy, n.third + dz)
+                                if (p !in allWoodSet && p !in finalLeafSet) {
+                                    sortedGrowPhase.add(n.second to BpBlock(p.first, p.second, p.third, tempLeafMat))
+                                    sortedGrowPhase.add((n.second + 4) to BpBlock(p.first, p.second, p.third, Material.AIR))
+                                }
                             }
                         }
                     }
@@ -842,6 +856,7 @@ object DynamicForestFeature : Listener {
                 Material.BIRCH_LOG -> "birch"
                 Material.SPRUCE_LOG -> "spruce"
                 Material.OAK_LOG -> "oak"
+                Material.ACACIA_LOG -> "acacia"
                 else -> continue
             }
 
@@ -849,6 +864,7 @@ object DynamicForestFeature : Listener {
                 Material.OAK_LOG -> listOf(Material.OAK_LEAVES)
                 Material.BIRCH_LOG -> listOf(Material.BIRCH_LEAVES)
                 Material.SPRUCE_LOG -> listOf(Material.SPRUCE_LEAVES)
+                Material.ACACIA_LOG -> listOf(Material.ACACIA_LEAVES)
                 else -> emptyList()
             }
 
@@ -860,7 +876,6 @@ object DynamicForestFeature : Listener {
                 .firstOrNull { it.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING) }
 
             if (marker != null) {
-                // Изменено на 80-100% созревания
                 val percent = Random.nextDouble(0.80, 1.00)
                 fastForwardTree(marker, percent)
             }
@@ -903,6 +918,7 @@ object DynamicForestFeature : Listener {
         val blueprintId = when (event.species) {
             TreeType.BIRCH, TreeType.TALL_BIRCH -> "birch"
             TreeType.REDWOOD, TreeType.TALL_REDWOOD -> "spruce"
+            TreeType.ACACIA -> "acacia"
             else -> "oak"
         }
         spawnDynamicTreeBase(event.location.block, blueprintId)
