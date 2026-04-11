@@ -31,7 +31,7 @@ class SeasonChangeEvent(val oldSeason: Season, val newSeason: Season) : Event() 
 
 // Data class to wrap the state, which GSON will convert into JSON
 data class SeasonData(
-    var season: Season = Season.AUTUMN,
+    var season: Season = Season.SPRING,
     var passedTicks: Long = 0L
 )
 
@@ -59,7 +59,9 @@ class SeasonManager(private val plugin: Vivaldi) {
      */
     fun initialize() {
         loadFromPDC()
-        startTimeCycle()
+        if (plugin.gameplayManager.config.general.enableSeasons) {
+            startTimeCycle()
+        }
     }
 
     /**

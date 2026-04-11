@@ -19,7 +19,13 @@ class GameplayConfiguration {
 
     class GeneralConfig {
         @Comment("Message prefix.")
-        val messagePrefix: String = "§6VIVALDI §8| §7"
+        val messagePrefix: String = "§6Vivaldi §8| §7"
+
+        @Comment(
+            "If needed, you can disable the seasonal cycle so that players do not receive modified packets.",
+            "Please note that the plugin will still work and some gameplay mechanics will still affect the game (grass growth, custom trees)."
+        )
+        val enableSeasons = true
     }
 
     class WorldsConfig {

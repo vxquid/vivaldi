@@ -46,10 +46,13 @@ class Vivaldi : JavaPlugin() {
         this.seasonManager = SeasonManager(this)
         this.seasonManager.initialize() // Запуск загрузки и старт таймера
 
-        com.github.retrooper.packetevents.PacketEvents.getAPI().eventManager.registerListener(
-            BiomeRegistryInterceptor,
-            com.github.retrooper.packetevents.event.PacketListenerPriority.NORMAL
-        )
+        if (plugin.gameplayManager.config.general.enableSeasons) {
+            com.github.retrooper.packetevents.PacketEvents.getAPI().eventManager.registerListener(
+                BiomeRegistryInterceptor,
+                com.github.retrooper.packetevents.event.PacketListenerPriority.NORMAL
+            )
+        }
+
     }
 
     override fun onDisable() {
