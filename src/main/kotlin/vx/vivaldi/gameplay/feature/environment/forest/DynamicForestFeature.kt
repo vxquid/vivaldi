@@ -16,7 +16,6 @@ import org.bukkit.block.data.MultipleFacing
 import org.bukkit.block.data.type.Leaves
 import org.bukkit.block.data.type.Switch
 import org.bukkit.block.data.type.Wall
-import org.bukkit.entity.BlockDisplay
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.Marker
 import org.bukkit.event.EventHandler
@@ -30,11 +29,6 @@ import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
 import org.bukkit.scheduler.BukkitRunnable
-import org.bukkit.util.Transformation
-import org.bukkit.util.Vector
-import org.joml.AxisAngle4f
-import org.joml.Quaternionf
-import org.joml.Vector3f
 import vx.vivaldi.Vivaldi.Companion.plugin
 import vx.vivaldi.season.Season
 import java.io.File
@@ -68,11 +62,11 @@ object DynamicForestFeature : Listener {
     private val SOIL_BLOCKS = setOf(
         Material.DIRT, Material.GRASS_BLOCK, Material.PODZOL,
         Material.MOSS_BLOCK, Material.COARSE_DIRT, Material.ROOTED_DIRT,
-        Material.MYCELIUM, Material.SNOW_BLOCK, Material.DIRT_PATH, Material.FARMLAND
+        Material.MYCELIUM, Material.DIRT_PATH, Material.FARMLAND
     )
 
     private val ROOT_REPLACEABLE = SOIL_BLOCKS + setOf(
-        Material.STONE, Material.ANDESITE, Material.DIORITE, Material.GRANITE, Material.DEEPSLATE, Material.TUFF
+        Material.STONE, Material.ANDESITE, Material.DIORITE, Material.GRANITE, Material.DEEPSLATE, Material.TUFF, Material.SNOW_BLOCK, Material.SNOW
     )
 
     private var task: BukkitRunnable? = null
@@ -93,14 +87,31 @@ object DynamicForestFeature : Listener {
     }
 
     data class Range(val min: Int, val max: Int) { fun random() = Random.nextInt(min, max + 1) }
-    data class TrunkRule(val thickChance: Double = 0.0, val bottomMaterial: String, val bottomMaxHeight: Int, val rootChance: Double, val middleMaterial: String, val middleHeightPercent: Double, val topMaterial: String, val bendChance: Double = 0.15, val stairsMaterial: String)
-    data class BranchRule(val count: Range, val length: Range, val startHeightPercent: Double, val knotChance: Double)
+
+    data class DecorationRule(val buttonChance: Double = 0.05, val trapdoorChance: Double = 0.05)
+    data class TrunkRule(val thickChance: Double = 0.0, val bottomMaterial: String, val bottomMaxHeight: Int, val middleMaterial: String, val middleHeightPercent: Double, val topMaterial: String, val bendChance: Double = 0.15, val stairsMaterial: String, val decorations: DecorationRule? = DecorationRule())
+    data class RootRule(val material: String, val chance: Double, val maxDepth: Int)
+
+    data class BranchRule(
+        val count: Range,
+        val length: Range,
+        val startHeightPercent: Double,
+        val knotChance: Double,
+        val bareChance: Double? = 0.0,
+        val bareMaterial: String? = null,
+        val curveUpChance: Double? = 0.8,
+        val curveDownChance: Double? = 0.0,
+        val thickBaseLength: Int? = 1
+    )
+
     data class LeafRule(val materials: List<String>, val radius: Int, val density: Double, val startHeightPercent: Double, val shapeFocusY: Double, val shape: String = "OVAL", val vinesChance: Double = 0.0)
     data class FruitRule(val base64: String, val dropMaterial: String, val spawnChance: Double, val dropChance: Double, val attachTo: String = "LEAVES")
 
-    data class TreeBlueprint(val baseMaterial: String, val height: Range, val maxStairs: Range = Range(0, 3), val trunk: TrunkRule, val branches: BranchRule, val leaves: LeafRule, val fruits: List<FruitRule> = emptyList()) {
+    data class TreeBlueprint(val baseMaterial: String, val height: Range, val maxStairs: Range = Range(0, 3), val trunk: TrunkRule, val roots: RootRule? = null, val branches: BranchRule, val leaves: LeafRule, val fruits: List<FruitRule> = emptyList()) {
         fun getLeafMaterials(): List<Material> = leaves.materials.mapNotNull { Material.getMaterial(it) }
         fun getRandomLeaf(): Material = getLeafMaterials().randomOrNull() ?: Material.OAK_LEAVES
+        fun getRootsRule(): RootRule = roots ?: RootRule(trunk.bottomMaterial, 0.4, 3)
+        fun getDecorations(): DecorationRule = trunk.decorations ?: DecorationRule(0.0, 0.0)
     }
 
     private class TreeStructureData(val height: Int, val growPhase: List<BpBlock>, val thickenPhase: List<BpBlock>, val expandPhase: List<BpBlock>, val hardenPhase: List<BpBlock>)
@@ -126,25 +137,50 @@ object DynamicForestFeature : Listener {
 
         val files = blueprintsDir.listFiles { _, name -> name.endsWith(".json") }
         if (files == null || files.isEmpty()) {
-            val defaultBirch = TreeBlueprint("PALE_OAK_FENCE", Range(12, 17), Range(0, 2), TrunkRule(0.0, "BIRCH_WOOD", 2, 0.2, "DIORITE_WALL", 0.4, "PALE_OAK_FENCE", 0.02, "ANDESITE_STAIRS"), BranchRule(Range(2, 5), Range(1, 3), 0.45, 0.08), LeafRule(listOf("OAK_LEAVES", "JUNGLE_LEAVES"), 3, 0.65, 0.4, 0.8, "OVAL", 0.0))
+
+            val defaultBirch = TreeBlueprint("PALE_OAK_FENCE", Range(14, 19), Range(0, 2),
+                TrunkRule(0.0, "BIRCH_WOOD", 2, "DIORITE_WALL", 0.4, "PALE_OAK_FENCE", 0.02, "ANDESITE_STAIRS", DecorationRule(0.02, 0.01)),
+                RootRule("BIRCH_WOOD", 0.3, 3),
+                BranchRule(Range(2, 5), Range(1, 3), 0.45, 0.08, 0.0, "BIRCH", 0.9, 0.0, 1),
+                LeafRule(listOf("BIRCH_LEAVES", "OAK_LEAVES"), 3, 0.65, 0.4, 0.8, "OVAL", 0.0))
 
             val appleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvMTdlYTI3OGQ2MjI1YzQ0N2M1OTQzZDY1Mjc5OGQwYmJiZDE0MTg0MzRjZThjNTRjNTRmZGFjNzk5OTRkZGQ2YyJ9fX0="
             val goldenAppleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZTkyZWFhY2QyOTBlYWQzN2ViMWEyMDJhYzczNjdmMzJiZTc0Y2Y0YWM3NzIzZTA2N2M0NjU4YmY2MmMzZGJkNiJ9fX0="
             val cocoaBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvMjExNmI5ZDhkZjM0NmEyNWVkZDA1Zjg0MmU3YTkzNDViZWFmMTZkY2E0MTE4YWJmNWE2OGM3NWJjYWFlMTAifX19"
 
-            val defaultOak = TreeBlueprint("DARK_OAK_FENCE", Range(14, 22), Range(0, 3), TrunkRule(0.05, "OAK_WOOD", 3, 0.4, "DARK_OAK_FENCE", 0.45, "DARK_OAK_FENCE", 0.15, "DARK_OAK_STAIRS"), BranchRule(Range(4, 7), Range(2, 4), 0.35, 0.15), LeafRule(listOf("OAK_LEAVES", "OAK_LEAVES", "JUNGLE_LEAVES"), 4, 0.75, 0.35, 0.0, "OVAL", 0.0), listOf(
-                FruitRule(appleBase64, "APPLE", 0.015, 0.6, "LEAVES"), FruitRule(goldenAppleBase64, "GOLDEN_APPLE", 0.001, 1.0, "LEAVES")
-            ))
+            val defaultOak = TreeBlueprint("DARK_OAK_FENCE", Range(16, 24), Range(0, 3),
+                TrunkRule(0.05, "OAK_WOOD", 3, "MUD_BRICK_WALL", 0.45, "DARK_OAK_FENCE", 0.15, "DARK_OAK_STAIRS", DecorationRule(0.05, 0.04)),
+                RootRule("OAK_WOOD", 0.5, 4),
+                BranchRule(Range(4, 7), Range(2, 4), 0.35, 0.15, 0.15, "SPRUCE", 0.6, 0.1, 1),
+                LeafRule(listOf("OAK_LEAVES", "BIRCH_LEAVES", "SPRUCE_LEAVES"), 4, 0.75, 0.35, 0.0, "OVAL", 0.0), listOf(
+                    FruitRule(appleBase64, "APPLE", 0.015, 0.6, "LEAVES"), FruitRule(goldenAppleBase64, "GOLDEN_APPLE", 0.001, 1.0, "LEAVES")
+                ))
 
-            val defaultSpruce = TreeBlueprint("SPRUCE_FENCE", Range(14, 20), Range(0, 1), TrunkRule(0.0, "SPRUCE_WOOD", 3, 0.3, "COBBLESTONE_WALL", 0.5, "SPRUCE_FENCE", 0.05, "SPRUCE_STAIRS"), BranchRule(Range(3, 6), Range(1, 2), 0.25, 0.1), LeafRule(listOf("SPRUCE_LEAVES"), 4, 0.85, 0.2, 0.0, "CONE", 0.0))
-            val defaultAcacia = TreeBlueprint("ACACIA_FENCE", Range(13, 20), Range(0, 2), TrunkRule(0.0, "ACACIA_WOOD", 2, 0.1, "TUFF_WALL", 0.55, "ACACIA_FENCE", 0.25, "TUFF_STAIRS"), BranchRule(Range(3, 6), Range(3, 5), 0.4, 0.15), LeafRule(listOf("ACACIA_LEAVES"), 4, 0.8, 0.6, 0.0, "FLAT", 0.0))
+            val defaultSpruce = TreeBlueprint("DARK_OAK_FENCE", Range(18, 25), Range(0, 1),
+                TrunkRule(0.0, "SPRUCE_WOOD", 3, "NETHER_BRICK_WALL", 0.5, "DARK_OAK_FENCE", 0.05, "SPRUCE_STAIRS", DecorationRule(0.03, 0.08)),
+                RootRule("SPRUCE_WOOD", 0.4, 3),
+                BranchRule(Range(3, 6), Range(1, 2), 0.35, 0.1, 0.0, "DARK_OAK", 0.2, 0.4, 1),
+                LeafRule(listOf("SPRUCE_LEAVES"), 4, 0.85, 0.3, 0.0, "CONE", 0.0))
 
-            // ОБНОВЛЕННЫЕ ДЖУНГЛИ: Уменьшен радиус, снижена плотность, поднята стартовая высота
-            val defaultJungle = TreeBlueprint("JUNGLE_FENCE", Range(20, 32), Range(0, 0), TrunkRule(0.4, "JUNGLE_WOOD", 6, 0.6, "JUNGLE_LOG", 0.6, "JUNGLE_FENCE", 0.05, "JUNGLE_STAIRS"), BranchRule(Range(4, 7), Range(3, 6), 0.5, 0.1), LeafRule(listOf("JUNGLE_LEAVES"), 4, 0.65, 0.55, 0.2, "OVAL", 0.15), listOf(
-                FruitRule(cocoaBase64, "COCOA_BEANS", 0.08, 0.8, "TRUNK")
-            ))
+            val defaultAcacia = TreeBlueprint("ACACIA_FENCE", Range(15, 22), Range(0, 2),
+                TrunkRule(0.0, "ACACIA_WOOD", 2, "TUFF_WALL", 0.55, "ACACIA_FENCE", 0.25, "TUFF_STAIRS", DecorationRule(0.01, 0.02)),
+                RootRule("ACACIA_WOOD", 0.2, 2),
+                BranchRule(Range(3, 6), Range(3, 5), 0.4, 0.15, 0.0, "ACACIA", 0.3, 0.0, 2),
+                LeafRule(listOf("ACACIA_LEAVES"), 4, 0.8, 0.6, 0.0, "FLAT", 0.0))
 
-            val defaultDarkOak = TreeBlueprint("DARK_OAK_FENCE", Range(14, 18), Range(0, 0), TrunkRule(0.3, "DARK_OAK_WOOD", 4, 0.5, "DARK_OAK_LOG", 0.5, "DARK_OAK_FENCE", 0.1, "DARK_OAK_STAIRS"), BranchRule(Range(4, 8), Range(3, 5), 0.4, 0.1), LeafRule(listOf("DARK_OAK_LEAVES"), 4, 0.65, 0.4, 0.4, "OVAL", 0.0))
+            val defaultJungle = TreeBlueprint("JUNGLE_FENCE", Range(20, 32), Range(0, 0),
+                TrunkRule(0.4, "JUNGLE_WOOD", 6, "JUNGLE_LOG", 0.6, "JUNGLE_FENCE", 0.05, "JUNGLE_STAIRS", DecorationRule(0.06, 0.03)),
+                RootRule("JUNGLE_WOOD", 0.7, 4),
+                BranchRule(Range(4, 7), Range(3, 6), 0.5, 0.1, 0.2, "JUNGLE", 0.7, 0.2, 2),
+                LeafRule(listOf("JUNGLE_LEAVES"), 4, 0.65, 0.55, 0.2, "OVAL", 0.15), listOf(
+                    FruitRule(cocoaBase64, "COCOA_BEANS", 0.08, 0.8, "TRUNK")
+                ))
+
+            val defaultDarkOak = TreeBlueprint("DARK_OAK_FENCE", Range(16, 20), Range(0, 0),
+                TrunkRule(0.3, "DARK_OAK_WOOD", 4, "DARK_OAK_LOG", 0.5, "DARK_OAK_FENCE", 0.1, "DARK_OAK_STAIRS", DecorationRule(0.05, 0.05)),
+                RootRule("DARK_OAK_WOOD", 0.6, 4),
+                BranchRule(Range(4, 8), Range(3, 5), 0.4, 0.1, 0.15, "DARK_OAK", 0.5, 0.1, 1),
+                LeafRule(listOf("DARK_OAK_LEAVES"), 4, 0.65, 0.4, 0.4, "OVAL", 0.0))
 
             File(blueprintsDir, "birch.json").writeText(gsonPretty.toJson(defaultBirch))
             File(blueprintsDir, "oak.json").writeText(gsonPretty.toJson(defaultOak))
@@ -196,9 +232,16 @@ object DynamicForestFeature : Listener {
                                     }
                                 }
                             }
+
                             processTreeGrowth(entity, stage, season, baseX, baseY, baseZ, 0)
-                            if (stage == TreeStage.MATURE && season != Season.WINTER) {
-                                animateLeaves(world, baseX, baseY, baseZ, pdc.get(TREE_HEIGHT_KEY, PersistentDataType.INTEGER) ?: 16, pdc.get(TREE_BP_ID_KEY, PersistentDataType.STRING) ?: "birch")
+
+                            if (stage == TreeStage.MATURE) {
+                                if (season != Season.WINTER) {
+                                    animateLeaves(world, baseX, baseY, baseZ, pdc.get(TREE_HEIGHT_KEY, PersistentDataType.INTEGER) ?: 16, pdc.get(TREE_BP_ID_KEY, PersistentDataType.STRING) ?: "birch")
+                                }
+                                if (season == Season.AUTUMN && Random.nextDouble() < 0.05) {
+                                    dropRandomFruit(world, pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING), baseX, baseY, baseZ)
+                                }
                             }
                         }
                     }
@@ -206,6 +249,26 @@ object DynamicForestFeature : Listener {
             }
         }
         task?.runTaskTimer(plugin, 60L, 4L)
+    }
+
+    private fun dropRandomFruit(world: org.bukkit.World, expandStr: String?, bx: Int, by: Int, bz: Int) {
+        if (expandStr == null) return
+        val blocks = parseList(expandStr)
+        val fruits = blocks.filter { it.mat == Material.PLAYER_HEAD || it.mat == Material.PLAYER_WALL_HEAD }
+        if (fruits.isEmpty()) return
+
+        val target = fruits.random()
+        val block = world.getBlockAt(bx + target.dx, by + target.dy, bz + target.dz)
+        if (block.type == Material.PLAYER_HEAD || block.type == Material.PLAYER_WALL_HEAD) {
+            val state = block.state as? org.bukkit.block.Skull ?: return
+            val skinUrl = state.ownerProfile?.textures?.skin?.toString() ?: return
+            val fruitRule = fruitMap[skinUrl] ?: return
+
+            block.setType(Material.AIR, false)
+            Material.getMaterial(fruitRule.dropMaterial)?.let {
+                world.dropItemNaturally(block.location.add(0.5, 0.2, 0.5), ItemStack(it))
+            }
+        }
     }
 
     private fun getTreeMarkerForBlock(block: Block): Marker? {
@@ -253,14 +316,14 @@ object DynamicForestFeature : Listener {
                 val block = world.getBlockAt(bx + bp.dx, by + bp.dy, bz + bp.dz)
 
                 if (bp.mat == Material.AIR) {
-                    if (block.type.name.contains("LEAVES")) {
+                    if (block.type.name.contains("LEAVES") || block.type == Material.SHORT_GRASS) {
                         block.setType(Material.AIR, false)
                     }
                 } else {
-                    val isWood = bp.mat.name.contains("LOG") || bp.mat.name.contains("WOOD") || bp.mat.name.contains("WALL") || bp.mat.name.contains("FENCE") || bp.mat.name.contains("BUTTON") || bp.mat.name.contains("STAIRS")
+                    val isWood = bp.mat.name.contains("LOG") || bp.mat.name.contains("WOOD") || bp.mat.name.contains("WALL") || bp.mat.name.contains("FENCE") || bp.mat.name.contains("BUTTON") || bp.mat.name.contains("STAIRS") || bp.mat.name.contains("TRAPDOOR")
                     val isRoot = bp.dy < 0
 
-                    if (block.type == Material.AIR || block.type.name.contains("LEAVES") || block.type == Material.VINE || isWood || (isRoot && block.type in ROOT_REPLACEABLE)) {
+                    if (block.type == Material.AIR || block.type.name.contains("LEAVES") || block.type == Material.VINE || isWood || (isRoot && block.type in ROOT_REPLACEABLE) || block.type == Material.SHORT_GRASS) {
                         block.setType(bp.mat, false)
                         setupBlockData(block, bp.ext)
                     }
@@ -325,6 +388,29 @@ object DynamicForestFeature : Listener {
         }
     }
 
+    private fun spawnGrassAroundTree(baseBlock: Block) {
+        Bukkit.getScheduler().runTaskLater(plugin, Runnable {
+            if (!baseBlock.chunk.isLoaded) return@Runnable
+            val world = baseBlock.world
+            for (dx in -4..4) {
+                for (dz in -4..4) {
+                    if (dx * dx + dz * dz <= 16 && Random.nextDouble() < 0.75) {
+                        val targetBlock = world.getHighestBlockAt(baseBlock.x + dx, baseBlock.z + dz)
+                        if (Math.abs(targetBlock.y - baseBlock.y) > 3) continue
+
+                        val below = targetBlock.getRelative(BlockFace.DOWN)
+                        if (below.type in SOIL_BLOCKS && below.type != Material.SNOW_BLOCK) {
+                            val hasSnow = ALL_FACES.any { targetBlock.getRelative(it).type == Material.SNOW }
+                            if (!hasSnow && (targetBlock.type.isAir || targetBlock.type == Material.SHORT_GRASS || targetBlock.type == Material.TALL_GRASS)) {
+                                targetBlock.setType(if (Random.nextDouble() < 0.1) Material.TALL_GRASS else Material.SHORT_GRASS, false)
+                            }
+                        }
+                    }
+                }
+            }
+        }, 30L)
+    }
+
     private fun spawnDynamicTreeBase(baseBlock: Block, blueprintId: String) {
         val blueprint = blueprints[blueprintId] ?: return
         baseBlock.setType(Material.getMaterial(blueprint.baseMaterial) ?: Material.OAK_FENCE, false)
@@ -347,6 +433,8 @@ object DynamicForestFeature : Listener {
         pdc.set(BP_EXPAND_KEY, PersistentDataType.STRING, structure.expandPhase.joinToString(";"))
         pdc.set(BP_HARDEN_KEY, PersistentDataType.STRING, structure.hardenPhase.joinToString(";"))
         pdc.set(PROG_KEY, PersistentDataType.INTEGER, 0)
+
+        spawnGrassAroundTree(baseBlock)
     }
 
     private fun generateTreeStructure(blueprint: TreeBlueprint): TreeStructureData {
@@ -359,7 +447,9 @@ object DynamicForestFeature : Listener {
         val trunkNodes = mutableListOf<Triple<Int, Int, Int>>()
         val branchNodes = mutableListOf<Triple<Int, Int, Int>>()
         val branchEnds = mutableListOf<Triple<Int, Int, Int>>()
+        val branchBlocksWithMat = mutableListOf<Pair<Triple<Int, Int, Int>, Material>>()
         val allWoodSet = mutableSetOf<Triple<Int, Int, Int>>()
+        val bareBranchSet = mutableSetOf<Triple<Int, Int, Int>>()
 
         val height = blueprint.height.random()
         var cx = 0; var cy = 0; var cz = 0
@@ -370,6 +460,10 @@ object DynamicForestFeature : Listener {
         val btnMatStr = blueprint.trunk.topMaterial.replace("_FENCE", "_BUTTON").replace("_LOG", "_BUTTON").replace("_WOOD", "_BUTTON")
         val btnMat = Material.getMaterial(btnMatStr) ?: Material.OAK_BUTTON
         val stairMat = Material.getMaterial(blueprint.trunk.stairsMaterial) ?: Material.OAK_STAIRS
+
+        val bareMatPrefix = blueprint.branches.bareMaterial ?: blueprint.trunk.topMaterial.substringBefore("_")
+        val gateMat = Material.getMaterial("${bareMatPrefix}_FENCE_GATE") ?: Material.OAK_FENCE_GATE
+        val trapdoorMat = Material.getMaterial("${bareMatPrefix}_TRAPDOOR") ?: Material.OAK_TRAPDOOR
 
         val maxStairsAllowed = blueprint.maxStairs.random()
         var stairsUsed = 0
@@ -426,47 +520,99 @@ object DynamicForestFeature : Listener {
         for (node in branchSourceNodes) {
             if (node.second >= bStartY && node.second < height - 2 && bCount < maxBranches && Random.nextDouble() <= 0.4) {
                 var bx = node.first; var by = node.second; var bz = node.third
-                val dx = listOf(-1, 1).random(); val dz = listOf(-1, 1).random()
                 val len = blueprint.branches.length.random()
+
+                val bareChance = blueprint.branches.bareChance ?: 0.0
+                if (Random.nextDouble() < bareChance) {
+                    val isX = Random.nextBoolean()
+                    val dx = if(isX) listOf(-1,1).random() else 0
+                    val dz = if(!isX) listOf(-1,1).random() else 0
+
+                    val gateFace = if (dx != 0) "south" else "east"
+                    val hinge = if (dx > 0) "west" else if (dx < 0) "east" else if (dz > 0) "north" else "south"
+
+                    for (l in 0 until len) {
+                        bx += dx; bz += dz
+                        sortedGrowPhase.add(by to BpBlock(bx, by, bz, gateMat, "facing=$gateFace,in_wall=false,open=false"))
+                        if (l == 0) {
+                            sortedGrowPhase.add((by + 1) to BpBlock(bx, by + 1, bz, trapdoorMat, "facing=$hinge,half=bottom,open=true"))
+                        } else {
+                            sortedGrowPhase.add((by + 1) to BpBlock(bx, by + 1, bz, trapdoorMat, "facing=$hinge,half=bottom,open=false"))
+                        }
+                        allWoodSet.add(Triple(bx, by, bz)); allWoodSet.add(Triple(bx, by + 1, bz))
+                        bareBranchSet.add(Triple(bx, by, bz)); bareBranchSet.add(Triple(bx, by + 1, bz))
+                    }
+                    bx += dx; bz += dz
+                    sortedGrowPhase.add((by + 1) to BpBlock(bx, by + 1, bz, trapdoorMat, "facing=$hinge,half=bottom,open=false"))
+                    allWoodSet.add(Triple(bx, by + 1, bz))
+                    bareBranchSet.add(Triple(bx, by + 1, bz))
+                    bCount++
+                    continue
+                }
+
+                val dx = listOf(-1, 1).random(); val dz = listOf(-1, 1).random()
+                val curveUp = blueprint.branches.curveUpChance ?: 0.8
+                val curveDown = blueprint.branches.curveDownChance ?: 0.0
+                val thickBaseLen = blueprint.branches.thickBaseLength ?: 1
+
                 for (l in 0 until len) {
+                    val currentMat = if (l < thickBaseLen) middleMat else topMat
+
                     if (Random.nextBoolean()) {
-                        bx += dx; branchNodes.add(Triple(bx, by, bz))
+                        bx += dx
+                        branchBlocksWithMat.add(Triple(bx, by, bz) to currentMat)
+                        branchNodes.add(Triple(bx, by, bz))
                         val fDir = if (dx > 0) "west" else "east"
                         if (stairsUsed < maxStairsAllowed) {
                             sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, stairMat, "facing=$fDir,half=top"))
                             stairsUsed++
-                        } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, topMat))
+                        } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, currentMat))
                         allWoodSet.add(Triple(bx, by - 1, bz))
 
                         if (Random.nextBoolean()) {
-                            bz += dz; branchNodes.add(Triple(bx, by, bz))
+                            bz += dz
+                            branchBlocksWithMat.add(Triple(bx, by, bz) to currentMat)
+                            branchNodes.add(Triple(bx, by, bz))
                             val fDirZ = if (dz > 0) "north" else "south"
                             if (stairsUsed < maxStairsAllowed) {
                                 sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, stairMat, "facing=$fDirZ,half=top"))
                                 stairsUsed++
-                            } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, topMat))
+                            } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, currentMat))
                             allWoodSet.add(Triple(bx, by - 1, bz))
                         }
                     } else {
-                        bz += dz; branchNodes.add(Triple(bx, by, bz))
+                        bz += dz
+                        branchBlocksWithMat.add(Triple(bx, by, bz) to currentMat)
+                        branchNodes.add(Triple(bx, by, bz))
                         val fDir = if (dz > 0) "north" else "south"
                         if (stairsUsed < maxStairsAllowed) {
                             sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, stairMat, "facing=$fDir,half=top"))
                             stairsUsed++
-                        } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, topMat))
+                        } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, currentMat))
                         allWoodSet.add(Triple(bx, by - 1, bz))
 
                         if (Random.nextBoolean()) {
-                            bx += dx; branchNodes.add(Triple(bx, by, bz))
+                            bx += dx
+                            branchBlocksWithMat.add(Triple(bx, by, bz) to currentMat)
+                            branchNodes.add(Triple(bx, by, bz))
                             val fDirX = if (dx > 0) "west" else "east"
                             if (stairsUsed < maxStairsAllowed) {
                                 sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, stairMat, "facing=$fDirX,half=top"))
                                 stairsUsed++
-                            } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, topMat))
+                            } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, currentMat))
                             allWoodSet.add(Triple(bx, by - 1, bz))
                         }
                     }
-                    by++; branchNodes.add(Triple(bx, by, bz))
+
+                    val randY = Random.nextDouble()
+                    if (randY < curveUp) {
+                        by++
+                    } else if (randY < curveUp + curveDown) {
+                        by--
+                    }
+
+                    branchBlocksWithMat.add(Triple(bx, by, bz) to currentMat)
+                    branchNodes.add(Triple(bx, by, bz))
                 }
                 branchEnds.add(Triple(bx, by, bz))
                 bCount++
@@ -488,44 +634,58 @@ object DynamicForestFeature : Listener {
 
         (trunkNodes + branchNodes).forEach { allWoodSet.add(it) }
 
-        canopyCenters.forEach { center ->
-            val isTop = trunkNodes.takeLast(thickness * thickness).contains(center)
-            val cr = if (isTop) r else maxOf(1, r - 1)
-            for (dx in -cr..cr) {
-                for (dy in -cr..cr) {
-                    for (dz in -cr..cr) {
-                        if (isFlat) {
-                            if (dy in -1..1) {
-                                val maxR = if (dy == 0) cr.toDouble() else cr - 1.5
-                                if (maxR > 0 && dx*dx + dz*dz <= maxR*maxR && Random.nextDouble() < blueprint.leaves.density) {
-                                    val p = Triple(center.first + dx, center.second + dy, center.third + dz)
+        if (isCone) {
+            val coneHeight = height - lStartY + 1
+            if (coneHeight > 0) {
+                for (dy in 0..coneHeight) {
+                    val progress = dy.toDouble() / coneHeight.toDouble()
+                    val maxR = r * (1.0 - Math.pow(progress, 1.5)) + 0.8
+                    val limit = Math.ceil(maxR).toInt()
+                    for (dx in -limit..limit) {
+                        for (dz in -limit..limit) {
+                            if (dx * dx + dz * dz <= (maxR * maxR) + Random.nextDouble() * 1.5) {
+                                if (Random.nextDouble() < blueprint.leaves.density) {
+                                    val p = Triple(cx + dx, lStartY + dy, cz + dz)
                                     if (p !in allWoodSet) finalLeafSet.add(p)
                                 }
-                            }
-                        } else if (isCone) {
-                            val distY = (dy + cr).toDouble() / (cr * 2)
-                            val maxR = cr * (1.0 - distY)
-                            if (dx*dx + dz*dz <= maxR*maxR && Random.nextDouble() < blueprint.leaves.density) {
-                                val p = Triple(center.first + dx, center.second + dy, center.third + dz)
-                                if (p !in allWoodSet) finalLeafSet.add(p)
-                            }
-                        } else {
-                            if ((dx*dx + dy*dy*ovalFactor + dz*dz) <= cr*cr && Random.nextDouble() < blueprint.leaves.density) {
-                                val p = Triple(center.first + dx, center.second + dy, center.third + dz)
-                                if (p !in allWoodSet) finalLeafSet.add(p)
                             }
                         }
                     }
                 }
             }
-        }
+        } else {
+            canopyCenters.forEach { center ->
+                val isTop = trunkNodes.takeLast(thickness * thickness).contains(center)
+                val cr = if (isTop) r else maxOf(1, r - 1)
+                for (dx in -cr..cr) {
+                    for (dy in -cr..cr) {
+                        for (dz in -cr..cr) {
+                            if (isFlat) {
+                                if (dy in -1..1) {
+                                    val maxR = if (dy == 0) cr.toDouble() else cr - 1.5
+                                    if (maxR > 0 && dx*dx + dz*dz <= maxR*maxR && Random.nextDouble() < blueprint.leaves.density) {
+                                        val p = Triple(center.first + dx, center.second + dy, center.third + dz)
+                                        if (p !in allWoodSet) finalLeafSet.add(p)
+                                    }
+                                }
+                            } else {
+                                if ((dx*dx + dy*dy*ovalFactor + dz*dz) <= cr*cr && Random.nextDouble() < blueprint.leaves.density) {
+                                    val p = Triple(center.first + dx, center.second + dy, center.third + dz)
+                                    if (p !in allWoodSet) finalLeafSet.add(p)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
-        (trunkNodes + branchNodes).forEach { w ->
-            if (w.second >= lStartY && !isFlat) {
-                ALL_FACES.forEach { face ->
-                    if (Random.nextDouble() < blueprint.leaves.density * 0.8) {
-                        val p = Triple(w.first + face.modX, w.second + face.modY, w.third + face.modZ)
-                        if (p !in allWoodSet) finalLeafSet.add(p)
+            (trunkNodes + branchNodes).forEach { w ->
+                if (w.second >= lStartY && !isFlat && w !in bareBranchSet) {
+                    ALL_FACES.forEach { face ->
+                        if (Random.nextDouble() < blueprint.leaves.density * 0.8) {
+                            val p = Triple(w.first + face.modX, w.second + face.modY, w.third + face.modZ)
+                            if (p !in allWoodSet) finalLeafSet.add(p)
+                        }
                     }
                 }
             }
@@ -533,12 +693,25 @@ object DynamicForestFeature : Listener {
 
         val logMaxY = Random.nextInt(0, blueprint.trunk.bottomMaxHeight + 1)
         val wallMaxY = (height * blueprint.trunk.middleHeightPercent).toInt()
+        val topY = trunkNodes.maxOfOrNull { it.second } ?: height
+
+        val decorRule = blueprint.getDecorations()
 
         trunkNodes.forEach { n ->
-            val baseTypePhase1 = if (n.second <= wallMaxY) middleMat else topMat
-            sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, baseTypePhase1))
+            val isAbsoluteTop = (n.second == topY)
+            val baseTypePhase1 = if (isAbsoluteTop) middleMat else if (n.second <= wallMaxY) middleMat else topMat
+            var extStr = ""
+            if (n.second <= height * 0.2 && baseTypePhase1.name.contains("WALL")) {
+                extStr = "relief"
+            }
+            sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, baseTypePhase1, extStr))
 
-            if (!isFlat && thickness == 1) {
+            if (isAbsoluteTop) {
+                sortedGrowPhase.add((n.second + 1) to BpBlock(n.first, n.second + 1, n.third, topMat))
+                allWoodSet.add(Triple(n.first, n.second + 1, n.third))
+            }
+
+            if (!isFlat && !isCone && thickness == 1) {
                 val tempLeafMat = blueprint.getRandomLeaf()
                 for (dx in -1..1) {
                     for (dy in 0..1) {
@@ -570,48 +743,78 @@ object DynamicForestFeature : Listener {
             }
             hardenPhase.add(BpBlock(n.first, n.second, n.third, bottomMat))
 
-            if (n.second in 2..(height-2) && Random.nextDouble() < 0.08 && thickness == 1) {
+            if (n.second in 2..(height-2) && thickness == 1) {
                 val face = HORIZONTAL_FACES.random()
                 val fDir = if (face == BlockFace.EAST) "east" else if (face == BlockFace.WEST) "west" else if (face == BlockFace.NORTH) "north" else "south"
-                hardenPhase.add(BpBlock(n.first + face.modX, n.second, n.third + face.modZ, btnMat, "facing=$fDir"))
-            }
 
-            if (n.second <= logMaxY) {
-                HORIZONTAL_FACES.forEach { face ->
-                    val rootCh = if (n.second == 0) blueprint.trunk.rootChance * 1.5 else blueprint.trunk.rootChance
-                    if (Random.nextDouble() < rootCh) {
-                        val rx = n.first + face.modX
-                        val rz = n.third + face.modZ
-                        if (Triple(rx, n.second, rz) !in allWoodSet) {
-                            for (ry in n.second downTo 0) {
-                                allWoodSet.add(Triple(rx, ry, rz))
-                                thickenPhase.add(BpBlock(rx, ry, rz, bottomMat))
+                if (Random.nextDouble() < decorRule.trapdoorChance) {
+                    val tdMat = Material.getMaterial(blueprint.trunk.topMaterial.replace("_FENCE", "_TRAPDOOR").replace("_LOG", "_TRAPDOOR")) ?: trapdoorMat
+                    hardenPhase.add(BpBlock(n.first + face.modX, n.second, n.third + face.modZ, tdMat, "facing=$fDir,open=true,half=bottom"))
+                } else if (Random.nextDouble() < decorRule.buttonChance) {
+                    hardenPhase.add(BpBlock(n.first + face.modX, n.second, n.third + face.modZ, btnMat, "facing=$fDir"))
+                }
+            }
+        }
+
+        val rootsRule = blueprint.getRootsRule()
+        val rootMat = Material.getMaterial(rootsRule.material) ?: bottomMat
+        val rootNodes = trunkNodes.filter { it.second == 0 }
+
+        rootNodes.forEach { n ->
+            HORIZONTAL_FACES.forEach { face ->
+                if (Random.nextDouble() < rootsRule.chance) {
+                    val rx = n.first + face.modX
+                    val rz = n.third + face.modZ
+                    val isFat = Random.nextBoolean()
+
+                    val placeRoot = { x: Int, z: Int ->
+                        if (Triple(x, n.second, z) !in allWoodSet) {
+                            allWoodSet.add(Triple(x, n.second, z))
+                            thickenPhase.add(BpBlock(x, n.second, z, rootMat, "relief"))
+                            val depth = Random.nextInt(2, rootsRule.maxDepth + 2)
+                            for (ry in -1 downTo -depth) {
+                                allWoodSet.add(Triple(x, ry, z))
+                                hardenPhase.add(BpBlock(x, ry, z, rootMat))
                             }
                         }
                     }
+                    placeRoot(rx, rz)
+                    if (isFat) {
+                        val sideFace = if (face.modX != 0) listOf(BlockFace.NORTH, BlockFace.SOUTH).random() else listOf(BlockFace.EAST, BlockFace.WEST).random()
+                        placeRoot(rx + sideFace.modX, rz + sideFace.modZ)
+                    }
+                }
+            }
+            val mainDepth = rootsRule.maxDepth
+            for (ry in -1 downTo -mainDepth) {
+                if (Random.nextDouble() < 0.9) {
+                    allWoodSet.add(Triple(n.first, ry, n.third))
+                    hardenPhase.add(BpBlock(n.first, ry, n.third, rootMat))
                 }
             }
         }
 
-        val rootDepth = Random.nextInt(2, 4)
-        trunkNodes.filter { it.second == 0 }.forEach { node ->
-            for (ry in -1 downTo -rootDepth) {
-                if (Random.nextDouble() < 0.8 + (ry * 0.2)) {
-                    hardenPhase.add(BpBlock(node.first, ry, node.third, bottomMat))
-                    allWoodSet.add(Triple(node.first, ry, node.third))
-                }
-            }
-        }
-
-        branchNodes.forEach { n ->
-            sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, topMat))
+        branchBlocksWithMat.forEach { n ->
+            sortedGrowPhase.add(n.first.second to BpBlock(n.first.first, n.first.second, n.first.third, n.second))
         }
 
         val fruitLocations = mutableSetOf<Triple<Int, Int, Int>>()
 
+        val leafMats = blueprint.getLeafMaterials()
+
         finalLeafSet.forEach { l ->
-            if (Random.nextBoolean()) sortedGrowPhase.add(l.second to BpBlock(l.first, l.second, l.third, blueprint.getRandomLeaf()))
-            else expandPhase.add(BpBlock(l.first, l.second, l.third, blueprint.getRandomLeaf()))
+            if (l in bareBranchSet) return@forEach
+            val leafMaterial = leafMats.randomOrNull() ?: Material.OAK_LEAVES
+            if (Random.nextBoolean()) sortedGrowPhase.add(l.second to BpBlock(l.first, l.second, l.third, leafMaterial))
+            else expandPhase.add(BpBlock(l.first, l.second, l.third, leafMaterial))
+
+            if (Random.nextDouble() < 0.08) {
+                val py = l.second + 1
+                val pg = Triple(l.first, py, l.third)
+                if (pg !in finalLeafSet && pg !in allWoodSet) {
+                    expandPhase.add(BpBlock(pg.first, pg.second, pg.third, Material.SHORT_GRASS))
+                }
+            }
 
             blueprint.fruits.filter { it.attachTo == "LEAVES" }.forEach { fruit ->
                 if (Random.nextDouble() < fruit.spawnChance) {
@@ -657,7 +860,10 @@ object DynamicForestFeature : Listener {
     }
 
     private fun setupBlockData(block: Block, ext: String = "") {
-        if (ext.isNotEmpty()) {
+        var isRelief = false
+        if (ext == "relief") {
+            isRelief = true
+        } else if (ext.isNotEmpty()) {
             if ((block.type == Material.PLAYER_HEAD || block.type == Material.PLAYER_WALL_HEAD) && ext.startsWith("fruit:")) {
                 val parts = ext.split(",")
                 val base64 = parts[0].substringAfter("fruit:")
@@ -688,6 +894,7 @@ object DynamicForestFeature : Listener {
                 } catch (e: Exception) {}
             }
         }
+
         val type = block.type
         if (type.name.contains("LEAVES")) {
             val bData = block.blockData as Leaves
@@ -710,20 +917,32 @@ object DynamicForestFeature : Listener {
             HORIZONTAL_FACES.firstOrNull { block.getRelative(it).type.isSolid }?.let { bData.facing = it.oppositeFace }
             block.setBlockData(bData, false)
         } else if (type.name.contains("LOG") || type.name.contains("WOOD") || type.name.contains("WALL") || type.name.contains("FENCE")) {
-            updateBlockConnections(block)
+            updateBlockConnections(block, isRelief)
         }
     }
 
-    private fun updateBlockConnections(block: Block) {
+    private fun updateBlockConnections(block: Block, addRelief: Boolean = false) {
         val data = block.blockData
-        val isConnectable = { mat: Material -> mat.isSolid || mat.name.contains("LOG") || mat.name.contains("WOOD") || mat.name.contains("FENCE") || mat.name.contains("WALL") || mat.name.contains("LEAVES") }
+        val isConnectable = { mat: Material ->
+            (mat.isSolid && !mat.isTransparent) ||
+                    mat.name.contains("LOG") || mat.name.contains("WOOD") ||
+                    mat.name.contains("FENCE") || mat.name.contains("WALL") ||
+                    mat.name.contains("LEAVES") || mat.name.contains("TRAPDOOR")
+        }
+
+        val reliefFaces = if (addRelief) HORIZONTAL_FACES.shuffled().take(Random.nextInt(1, 3)) else emptyList()
 
         if (data is MultipleFacing && block.type.name.contains("FENCE")) {
-            HORIZONTAL_FACES.forEach { face -> data.setFace(face, isConnectable(block.getRelative(face).type)) }
+            HORIZONTAL_FACES.forEach { face ->
+                data.setFace(face, isConnectable(block.getRelative(face).type) || reliefFaces.contains(face))
+            }
             block.setBlockData(data, false)
         } else if (data is Wall && block.type.name.contains("WALL")) {
             data.isUp = true
-            HORIZONTAL_FACES.forEach { face -> data.setHeight(face, if (isConnectable(block.getRelative(face).type)) Wall.Height.LOW else Wall.Height.NONE) }
+            HORIZONTAL_FACES.forEach { face ->
+                val connect = isConnectable(block.getRelative(face).type) || reliefFaces.contains(face)
+                data.setHeight(face, if (connect) Wall.Height.LOW else Wall.Height.NONE)
+            }
             block.setBlockData(data, false)
         }
 
@@ -761,165 +980,6 @@ object DynamicForestFeature : Listener {
                 setupBlockData(block)
             }
         }
-    }
-
-    private data class FallingBlockData(val display: BlockDisplay, val originalOffset: Vector, val dropMat: Material? = null)
-
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    fun onTreeChop(event: BlockBreakEvent) {
-        val block = event.block
-        if (!(block.type.name.contains("LOG") || block.type.name.contains("WOOD") || block.type.name.contains("FENCE") || block.type.name.contains("WALL"))) return
-
-        val marker = getTreeMarkerForBlock(block) ?: return
-
-        val pdc = marker.persistentDataContainer
-        val bx = pdc.get(TREE_BASE_X, PersistentDataType.INTEGER) ?: marker.location.blockX
-        val by = pdc.get(TREE_BASE_Y, PersistentDataType.INTEGER) ?: marker.location.blockY
-        val bz = pdc.get(TREE_BASE_Z, PersistentDataType.INTEGER) ?: marker.location.blockZ
-
-        val treeBlocks = (parseList(pdc.get(BP_GROW_KEY, PersistentDataType.STRING)) +
-                parseList(pdc.get(BP_THICKEN_KEY, PersistentDataType.STRING)) +
-                parseList(pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING)) +
-                parseList(pdc.get(BP_HARDEN_KEY, PersistentDataType.STRING)))
-
-        val treeSet = treeBlocks.map { Triple(bx + it.dx, by + it.dy, bz + it.dz) }.toMutableSet()
-        val brokenCoords = Triple(block.x, block.y, block.z)
-
-        if (brokenCoords !in treeSet) return
-
-        event.isCancelled = true
-        block.setType(Material.AIR, false)
-        treeSet.remove(brokenCoords)
-
-        val roots = treeSet.filter { it.second <= by }.toSet()
-        val supported = mutableSetOf<Triple<Int, Int, Int>>()
-        val queue = ArrayDeque<Triple<Int, Int, Int>>()
-
-        queue.addAll(roots)
-        supported.addAll(roots)
-
-        while (queue.isNotEmpty()) {
-            val curr = queue.removeFirst()
-            for (face in ALL_FACES) {
-                val adj = Triple(curr.first + face.modX, curr.second + face.modY, curr.third + face.modZ)
-                if (adj in treeSet && adj !in supported) {
-                    supported.add(adj)
-                    queue.add(adj)
-                }
-            }
-        }
-
-        val falling = treeSet - supported
-        if (falling.isEmpty()) return
-
-        val remainFilter = { bp: BpBlock ->
-            val p = Triple(bx + bp.dx, by + bp.dy, bz + bp.dz)
-            p !in falling && p != brokenCoords
-        }
-
-        pdc.set(BP_GROW_KEY, PersistentDataType.STRING, parseList(pdc.get(BP_GROW_KEY, PersistentDataType.STRING)).filter(remainFilter).joinToString(";"))
-        pdc.set(BP_THICKEN_KEY, PersistentDataType.STRING, parseList(pdc.get(BP_THICKEN_KEY, PersistentDataType.STRING)).filter(remainFilter).joinToString(";"))
-        pdc.set(BP_EXPAND_KEY, PersistentDataType.STRING, parseList(pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING)).filter(remainFilter).joinToString(";"))
-        pdc.set(BP_HARDEN_KEY, PersistentDataType.STRING, parseList(pdc.get(BP_HARDEN_KEY, PersistentDataType.STRING)).filter(remainFilter).joinToString(";"))
-
-        if (supported.size < 4) marker.remove()
-
-        val world = block.world
-        world.playSound(block.location, Sound.ENTITY_ZOMBIE_BREAK_WOODEN_DOOR, 1f, 0.5f)
-
-        val lowestY = falling.minOf { it.second }
-        val lowestBlocks = falling.filter { it.second == lowestY }
-        val avgX = lowestBlocks.map { it.first }.average() + 0.5
-        val avgZ = lowestBlocks.map { it.third }.average() + 0.5
-
-        val pivotVector = Vector(avgX, lowestY.toDouble(), avgZ)
-
-        val fallDir = event.player.location.direction.apply { setY(0.0) }
-        if (fallDir.lengthSquared() < 0.001) fallDir.setX(1.0)
-        fallDir.normalize()
-
-        val axis = Vector(0.0, 1.0, 0.0).crossProduct(fallDir).normalize()
-        val axis3f = Vector3f(axis.x.toFloat(), axis.y.toFloat(), axis.z.toFloat())
-
-        val fallingBlocksData = mutableListOf<FallingBlockData>()
-
-        falling.forEach { coords ->
-            val b = world.getBlockAt(coords.first, coords.second, coords.third)
-            if (b.type != Material.AIR && !b.type.name.endsWith("AIR")) {
-                var dropMatToPass: Material? = null
-
-                if (b.type == Material.PLAYER_HEAD || b.type == Material.PLAYER_WALL_HEAD) {
-                    val state = b.state as? org.bukkit.block.Skull
-                    val skinUrl = state?.ownerProfile?.textures?.skin?.toString()
-                    if (skinUrl != null) {
-                        val fruit = fruitMap[skinUrl]
-                        if (fruit != null && Random.nextDouble() < fruit.dropChance) {
-                            dropMatToPass = Material.getMaterial(fruit.dropMaterial)
-                        }
-                    }
-                }
-
-                val bData = b.blockData
-                b.setType(Material.AIR, false)
-
-                val offset = b.location.toVector().add(Vector(0.5, 0.0, 0.5)).subtract(pivotVector)
-
-                val display = world.spawn(pivotVector.toLocation(world), BlockDisplay::class.java) { d ->
-                    d.block = bData
-                    d.teleportDuration = 2
-                    d.interpolationDuration = 2
-                    d.transformation = Transformation(offset.toVector3f(), AxisAngle4f(), Vector3f(1f), AxisAngle4f())
-                }
-                fallingBlocksData.add(FallingBlockData(display, offset, dropMatToPass))
-            }
-        }
-
-        val totalTicks = 80
-        object : BukkitRunnable() {
-            var tick = 0
-            override fun run() {
-                tick++
-                if (tick > totalTicks) {
-                    this.cancel()
-                    world.playSound(pivotVector.toLocation(world), Sound.ENTITY_GENERIC_EXPLODE, 0.5f, 1.5f)
-                    fallingBlocksData.forEach { fb ->
-                        val trans = fb.display.transformation.translation
-                        val finalWorldLoc = pivotVector.clone().add(Vector(trans.x.toDouble(), trans.y.toDouble(), trans.z.toDouble())).toLocation(world)
-                        world.spawnParticle(Particle.BLOCK_CRUMBLE, finalWorldLoc, 5, 0.3, 0.3, 0.3, fb.display.block)
-
-                        val mat = fb.display.block.material
-                        if (fb.dropMat != null) {
-                            world.dropItemNaturally(finalWorldLoc, ItemStack(fb.dropMat))
-                        } else if (mat.name.contains("LOG") || mat.name.contains("WOOD")) {
-                            world.dropItemNaturally(finalWorldLoc, ItemStack(mat))
-                            if (Random.nextDouble() < 0.1 && finalWorldLoc.block.type == Material.AIR) finalWorldLoc.block.setType(mat, false)
-                        } else if (mat.name.contains("LEAVES")) {
-                            if (Random.nextDouble() < 0.05) world.dropItemNaturally(finalWorldLoc, ItemStack(Material.STICK))
-                        }
-                        fb.display.remove()
-                    }
-                    return
-                }
-
-                val progress = tick.toDouble() / totalTicks
-                val easeProgress = progress * progress
-                val angle = Math.toRadians(90.0 * easeProgress)
-
-                val quat = Quaternionf().fromAxisAngleRad(axis3f, angle.toFloat())
-
-                fallingBlocksData.forEach { fb ->
-                    val rotatedOffset = fb.originalOffset.clone().rotateAroundAxis(axis, angle)
-                    fb.display.interpolationDelay = 0
-                    fb.display.interpolationDuration = 2
-                    fb.display.transformation = Transformation(
-                        rotatedOffset.toVector3f(),
-                        quat,
-                        Vector3f(1f),
-                        Quaternionf()
-                    )
-                }
-            }
-        }.runTaskTimer(plugin, 1L, 1L)
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -1031,7 +1091,7 @@ object DynamicForestFeature : Listener {
                 .firstOrNull { it.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING) }
 
             if (marker != null) {
-                val percent = Random.nextDouble(0.80, 1.00)
+                val percent = Random.nextDouble(0.90, 1.00)
                 fastForwardTree(marker, percent)
             }
         }
@@ -1085,7 +1145,7 @@ object DynamicForestFeature : Listener {
     fun onBoneMealInteract(event: PlayerInteractEvent) {
         if (event.action != Action.RIGHT_CLICK_BLOCK || event.item?.type != Material.BONE_MEAL) return
         val block = event.clickedBlock ?: return
-        if (!(block.type.name.contains("LOG") || block.type.name.contains("WOOD") || block.type.name.contains("FENCE") || block.type.name.contains("WALL") || block.type.name.contains("LEAVES"))) return
+        if (!(block.type.name.contains("LOG") || block.type.name.contains("WOOD") || block.type.name.contains("FENCE") || block.type.name.contains("WALL") || block.type.name.contains("LEAVES") || block.type.name.contains("TRAPDOOR"))) return
 
         val marker = getTreeMarkerForBlock(block) ?: return
 
