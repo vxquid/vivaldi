@@ -3,6 +3,7 @@ package vx.vivaldi.gameplay.feature.environment.forest
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import org.bukkit.Bukkit
+import org.bukkit.ChunkSnapshot
 import org.bukkit.Material
 import org.bukkit.NamespacedKey
 import org.bukkit.Particle
@@ -25,6 +26,7 @@ import org.bukkit.event.block.Action
 import org.bukkit.event.block.BlockBreakEvent
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.world.ChunkLoadEvent
+import org.bukkit.event.world.ChunkPopulateEvent
 import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
@@ -35,6 +37,8 @@ import java.io.File
 import java.net.URL
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.random.Random
 
 object DynamicForestFeature : Listener {
@@ -69,7 +73,22 @@ object DynamicForestFeature : Listener {
         Material.STONE, Material.ANDESITE, Material.DIORITE, Material.GRANITE, Material.DEEPSLATE, Material.TUFF, Material.SNOW_BLOCK, Material.SNOW
     )
 
-    private var task: BukkitRunnable? = null
+    // WORKER QUEUES
+    data class ChunkLocation(val world: String, val x: Int, val z: Int)
+    data class TreeData(val x: Int, val y: Int, val z: Int, val logMat: Material, val bpId: String)
+    data class PendingChunkTask(val world: String, val trees: List<TreeData>) {
+        var deleteIndex = 0
+        var spawnIndex = 0
+    }
+
+    private val chunkScanQueue = ConcurrentLinkedQueue<ChunkLocation>()
+    private val chunkTaskQueue = ConcurrentLinkedQueue<PendingChunkTask>()
+
+    private var masterWorker: BukkitRunnable? = null
+    private var treeGrowthWorker: BukkitRunnable? = null
+
+    // PSEUDO-PROCEDURAL GENERATION POOL
+    private val treePool = ConcurrentHashMap<String, List<TreeStructureData>>()
 
     enum class TreeStage { GROWING, THICKENING, EXPANDING, HARDENING, MATURE }
 
@@ -207,7 +226,123 @@ object DynamicForestFeature : Listener {
     }
 
     private fun start() {
-        task = object : BukkitRunnable() {
+        var pregenAmount = 150
+        try {
+            pregenAmount = plugin.gameplayManager.config.dynamicForest.treePoolSize
+        } catch (e: Exception) {}
+
+        plugin.logger.info("[DynamicForest] Pre-generating tree pool ($pregenAmount per blueprint)...")
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
+            val start = System.currentTimeMillis()
+            blueprints.forEach { (id, bp) ->
+                val list = mutableListOf<TreeStructureData>()
+                for (i in 0 until pregenAmount) {
+                    list.add(generateTreeStructure(bp))
+                }
+                treePool[id] = list
+            }
+            plugin.logger.info("[DynamicForest] Successfully pre-generated ${blueprints.size * pregenAmount} trees in ${System.currentTimeMillis() - start}ms.")
+        })
+
+        // Инициализируем Умного Воркера (Адаптивный алгоритм AIMD: Additive Increase / Multiplicative Decrease)
+        masterWorker = object : BukkitRunnable() {
+            var lastTick = System.currentTimeMillis()
+            var tps = 20.0
+            var currentTask: PendingChunkTask? = null
+            var currentOpLimit = 2.0 // Текущая "скорость" воркера
+
+            override fun run() {
+                val now = System.currentTimeMillis()
+                val delta = now - lastTick
+                val currentTps = if (delta > 0) 1000.0 / delta else 20.0
+                tps = (tps * 0.9) + (currentTps * 0.1) // Плавное сглаживание TPS
+                lastTick = now
+
+                val maxOps = try { plugin.gameplayManager.config.dynamicForest.maxOperationsPerTick.toDouble() } catch (e: Exception) { 40.0 }
+
+                // Динамический контроль "коробки передач" нашего воркера
+                if (tps >= 19.5) {
+                    // Серверу отлично, плавно разгоняемся до максимума (Additive Increase)
+                    currentOpLimit = minOf(maxOps, currentOpLimit + 1.5)
+                } else if (tps in 18.0..19.5) {
+                    // Стабильно, держим плато. Ничего не меняем.
+                } else if (tps in 15.0..18.0) {
+                    // Начинаются лаги, жестко сбрасываем скорость (Multiplicative Decrease)
+                    currentOpLimit = maxOf(1.0, currentOpLimit * 0.7)
+                } else {
+                    // Серверу очень плохо (<15 TPS), жмем по тормозам
+                    currentOpLimit = 0.0
+                }
+
+                val opLimit = currentOpLimit.toInt()
+
+                // Пропорционально масштабируем создание снапшотов
+                val snapshotLimit = if (opLimit > 0) maxOf(1, opLimit / 5) else 0
+
+                for (i in 0 until snapshotLimit) {
+                    val loc = chunkScanQueue.poll() ?: break
+                    val w = Bukkit.getWorld(loc.world) ?: continue
+                    if (w.isChunkLoaded(loc.x, loc.z)) {
+                        val chunk = w.getChunkAt(loc.x, loc.z)
+                        val snapshot = chunk.chunkSnapshot
+                        scanChunkAsync(loc.world, snapshot)
+                    }
+                }
+
+                // Этап выполнения замены с учетом жесткого рассчитанного лимита (opLimit)
+                var operationsDone = 0
+                while (operationsDone < opLimit) {
+                    val task = currentTask ?: chunkTaskQueue.peek() ?: break
+                    currentTask = task
+
+                    val world = Bukkit.getWorld(task.world)
+                    if (world == null) {
+                        chunkTaskQueue.poll()
+                        currentTask = null
+                        continue
+                    }
+
+                    // Фаза 1: Удаляем ванильные деревья по очереди (чтобы не зацепить кроны новых)
+                    if (task.deleteIndex < task.trees.size) {
+                        val tree = task.trees[task.deleteIndex++]
+                        val block = world.getBlockAt(tree.x, tree.y, tree.z)
+
+                        if (block.chunk.isLoaded && block.type == tree.logMat) {
+                            val leavesMats = getLeavesMatsFor(tree.logMat)
+                            removeVanillaTree(block, tree.logMat, leavesMats)
+                        }
+                        operationsDone++
+                    }
+                    // Фаза 2: После полного удаления спавним кастомные на чистом пустом месте
+                    else if (task.spawnIndex < task.trees.size) {
+                        val tree = task.trees[task.spawnIndex++]
+                        val block = world.getBlockAt(tree.x, tree.y, tree.z)
+
+                        if (block.chunk.isLoaded) {
+                            spawnDynamicTreeBase(block, tree.bpId)
+                            val marker = block.world.getNearbyEntities(block.location.add(0.5, 0.0, 0.5), 0.5, 0.5, 0.5)
+                                .filterIsInstance<Marker>()
+                                .firstOrNull { it.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING) }
+
+                            if (marker != null) {
+                                val percent = Random.nextDouble(0.90, 1.00)
+                                fastForwardTree(marker, percent)
+                            }
+                        }
+                        operationsDone++
+                    }
+                    // Чанк полностью завершен, берем следующий
+                    else {
+                        chunkTaskQueue.poll()
+                        currentTask = null
+                    }
+                }
+            }
+        }
+        masterWorker?.runTaskTimer(plugin, 1L, 1L)
+
+        // Воркер для постепенного роста уже установленных деревьев
+        treeGrowthWorker = object : BukkitRunnable() {
             override fun run() {
                 val season = plugin.seasonManager.currentSeason
                 val worlds = Bukkit.getWorlds().filter { it.name in plugin.gameplayManager.allowedWorlds }
@@ -248,7 +383,7 @@ object DynamicForestFeature : Listener {
                 }
             }
         }
-        task?.runTaskTimer(plugin, 60L, 4L)
+        treeGrowthWorker?.runTaskTimer(plugin, 60L, 4L)
     }
 
     private fun dropRandomFruit(world: org.bukkit.World, expandStr: String?, bx: Int, by: Int, bz: Int) {
@@ -419,7 +554,13 @@ object DynamicForestFeature : Listener {
         val loc = baseBlock.location.add(0.5, 0.0, 0.5)
         val marker = baseBlock.world.spawnEntity(loc, EntityType.MARKER) as Marker
         val pdc = marker.persistentDataContainer
-        val structure = generateTreeStructure(blueprint)
+
+        val pool = treePool[blueprintId]
+        val structure = if (pool != null && pool.isNotEmpty()) {
+            pool.random()
+        } else {
+            generateTreeStructure(blueprint)
+        }
 
         pdc.set(TREE_STAGE_KEY, PersistentDataType.STRING, TreeStage.GROWING.name)
         pdc.set(TREE_BP_ID_KEY, PersistentDataType.STRING, blueprintId)
@@ -898,6 +1039,7 @@ object DynamicForestFeature : Listener {
         val type = block.type
         if (type.name.contains("LEAVES")) {
             val bData = block.blockData as Leaves
+            // Это КЛЮЧЕВАЯ метка! persistent = true защитит эти листья от случайного удаления алгоритмом в будущем!
             bData.isPersistent = true; bData.distance = 1; block.setBlockData(bData, false)
         } else if (type == Material.VINE) {
             val bData = block.blockData as MultipleFacing
@@ -1019,82 +1161,102 @@ object DynamicForestFeature : Listener {
         }
     }
 
-    @EventHandler
-    fun onChunkLoad(event: ChunkLoadEvent) {
-        val chunk = event.chunk
+    private fun queueChunkForProcessing(chunk: org.bukkit.Chunk) {
         if (chunk.world.name !in plugin.gameplayManager.allowedWorlds) return
 
         val pdc = chunk.persistentDataContainer
-        Bukkit.getScheduler().runTaskLater(plugin, Runnable {
-            if (!chunk.isLoaded) return@Runnable
-            if (pdc.has(REPLACED_TAG, PersistentDataType.BYTE)) return@Runnable
-            pdc.set(REPLACED_TAG, PersistentDataType.BYTE, 1.toByte())
+        // Защита от двойного сканирования
+        if (pdc.has(REPLACED_TAG, PersistentDataType.BYTE)) return
+        pdc.set(REPLACED_TAG, PersistentDataType.BYTE, 1.toByte())
 
-            replaceTreesInChunk(chunk)
-        }, 1L)
+        val worldName = chunk.world.name
+        val cx = chunk.x
+        val cz = chunk.z
+
+        // Добавляем в очередь спустя 3 секунды, чтобы дать ванильной генерации закончить свои дела без лагов
+        Bukkit.getScheduler().runTaskLater(plugin, Runnable {
+            chunkScanQueue.add(ChunkLocation(worldName, cx, cz))
+        }, 60L)
     }
 
-    private fun replaceTreesInChunk(chunk: org.bukkit.Chunk) {
-        val roots = mutableListOf<Block>()
-        val world = chunk.world
+    @EventHandler
+    fun onChunkPopulate(event: ChunkPopulateEvent) {
+        queueChunkForProcessing(event.chunk)
+    }
 
-        for (x in 0..15) {
-            for (z in 0..15) {
-                val worldX = chunk.x * 16 + x
-                val worldZ = chunk.z * 16 + z
-                val highest = world.getHighestBlockYAt(worldX, worldZ)
+    @EventHandler
+    fun onChunkLoad(event: ChunkLoadEvent) {
+        queueChunkForProcessing(event.chunk)
+    }
 
-                for (y in highest downTo 50) {
-                    val block = chunk.getBlock(x, y, z)
-                    if (block.type.name.endsWith("_LOG")) {
-                        val below = block.getRelative(BlockFace.DOWN).type
-                        if (below in SOIL_BLOCKS) {
-                            roots.add(block)
-                            break
+    private fun getBlueprintIdFor(type: Material): String? {
+        return when (type) {
+            Material.BIRCH_LOG, Material.BIRCH_WOOD -> "birch"
+            Material.SPRUCE_LOG, Material.SPRUCE_WOOD -> "spruce"
+            Material.OAK_LOG, Material.OAK_WOOD -> "oak"
+            Material.ACACIA_LOG, Material.ACACIA_WOOD -> "acacia"
+            Material.JUNGLE_LOG, Material.JUNGLE_WOOD -> "jungle"
+            Material.DARK_OAK_LOG, Material.DARK_OAK_WOOD -> "dark_oak"
+            else -> null
+        }
+    }
+
+    private fun getLeavesMatsFor(type: Material): List<Material> {
+        return when (type) {
+            Material.OAK_LOG, Material.OAK_WOOD -> listOf(Material.OAK_LEAVES)
+            Material.BIRCH_LOG, Material.BIRCH_WOOD -> listOf(Material.BIRCH_LEAVES)
+            Material.SPRUCE_LOG, Material.SPRUCE_WOOD -> listOf(Material.SPRUCE_LEAVES)
+            Material.ACACIA_LOG, Material.ACACIA_WOOD -> listOf(Material.ACACIA_LEAVES)
+            Material.JUNGLE_LOG, Material.JUNGLE_WOOD -> listOf(Material.JUNGLE_LEAVES)
+            Material.DARK_OAK_LOG, Material.DARK_OAK_WOOD -> listOf(Material.DARK_OAK_LEAVES)
+            else -> emptyList()
+        }
+    }
+
+    // Асинхронный воркер сканирования
+    private fun scanChunkAsync(worldName: String, snapshot: ChunkSnapshot) {
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
+            val chunkX = snapshot.x
+            val chunkZ = snapshot.z
+            val trees = mutableListOf<TreeData>()
+
+            for (x in 0..15) {
+                for (z in 0..15) {
+                    var topY = snapshot.getHighestBlockYAt(x, z)
+
+                    while (topY > 0) {
+                        val t = snapshot.getBlockType(x, topY, z)
+                        if (!t.isAir && t != Material.SNOW && t != Material.VINE) break
+                        topY--
+                    }
+                    val topType = snapshot.getBlockType(x, topY, z)
+
+                    if (!topType.name.contains("LEAVES")) continue
+
+                    for (y in 50..topY) {
+                        val type = snapshot.getBlockType(x, y, z)
+                        if (type.name.endsWith("_LOG") || type.name.endsWith("_WOOD")) {
+                            val belowType = snapshot.getBlockType(x, y - 1, z)
+
+                            if (belowType in SOIL_BLOCKS) {
+                                val absX = (chunkX shl 4) + x
+                                val absZ = (chunkZ shl 4) + z
+                                val bpId = getBlueprintIdFor(type)
+                                if (bpId != null) {
+                                    trees.add(TreeData(absX, y, absZ, type, bpId))
+                                }
+                                break
+                            }
                         }
-                    } else if (block.type.isSolid && block.type !in SOIL_BLOCKS && !block.type.name.contains("LEAVES") && !block.type.name.contains("WOOD")) {
-                        break
                     }
                 }
             }
-        }
 
-        for (root in roots) {
-            val type = root.type
-            if (!type.name.endsWith("_LOG")) continue
-
-            val blueprintId = when (type) {
-                Material.BIRCH_LOG -> "birch"
-                Material.SPRUCE_LOG -> "spruce"
-                Material.OAK_LOG -> "oak"
-                Material.ACACIA_LOG -> "acacia"
-                Material.JUNGLE_LOG -> "jungle"
-                Material.DARK_OAK_LOG -> "dark_oak"
-                else -> continue
+            // Перекидываем результаты в очередь на синхронную замену целого чанка
+            if (trees.isNotEmpty()) {
+                chunkTaskQueue.add(PendingChunkTask(worldName, trees))
             }
-
-            val leavesMats = when (type) {
-                Material.OAK_LOG -> listOf(Material.OAK_LEAVES)
-                Material.BIRCH_LOG -> listOf(Material.BIRCH_LEAVES)
-                Material.SPRUCE_LOG -> listOf(Material.SPRUCE_LEAVES)
-                Material.ACACIA_LOG -> listOf(Material.ACACIA_LEAVES)
-                Material.JUNGLE_LOG -> listOf(Material.JUNGLE_LEAVES)
-                Material.DARK_OAK_LOG -> listOf(Material.DARK_OAK_LEAVES)
-                else -> emptyList()
-            }
-
-            removeVanillaTree(root, type, leavesMats)
-            spawnDynamicTreeBase(root, blueprintId)
-
-            val marker = root.world.getNearbyEntities(root.location.add(0.5, 0.0, 0.5), 0.5, 0.5, 0.5)
-                .filterIsInstance<Marker>()
-                .firstOrNull { it.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING) }
-
-            if (marker != null) {
-                val percent = Random.nextDouble(0.90, 1.00)
-                fastForwardTree(marker, percent)
-            }
-        }
+        })
     }
 
     private fun removeVanillaTree(start: Block, logMat: Material, leavesMats: List<Material>) {
@@ -1104,8 +1266,22 @@ object DynamicForestFeature : Listener {
         visited.add(start)
 
         var count = 0
+        var mainLeafData: org.bukkit.block.data.BlockData? = null
+        val particleLocs = mutableListOf<org.bukkit.Location>()
+
         while(queue.isNotEmpty() && count < 1000) {
             val b = queue.removeFirst()
+            val type = b.type
+
+            if (type in leavesMats) {
+                val bData = b.blockData
+                // Защита! Игнорируем и не ломаем persistent листья (поставленные игроками или сгенерированные нами ранее)
+                if (bData is Leaves && bData.isPersistent) continue
+
+                mainLeafData = mainLeafData ?: bData
+                if (Random.nextDouble() < 0.25) particleLocs.add(b.location.add(0.5, 0.5, 0.5))
+            }
+
             b.setType(Material.AIR, false)
 
             val up = b.getRelative(BlockFace.UP)
@@ -1115,13 +1291,35 @@ object DynamicForestFeature : Listener {
 
             for (face in ALL_FACES) {
                 val rel = b.getRelative(face)
-                if (!rel.chunk.isLoaded) continue
+                if (!rel.chunk.isLoaded) continue // Защита от каскадной загрузки чанков
                 if (rel !in visited) {
-                    val type = rel.type
-                    if (type == logMat || type in leavesMats || type == Material.VINE || type == Material.COCOA) {
+                    val rType = rel.type
+                    if (rType == logMat || rType in leavesMats || rType == Material.VINE || rType == Material.COCOA) {
+
+                        // Если это листва, превентивно проверяем persistent ли она, чтобы даже не добавлять её в очередь
+                        if (rType in leavesMats) {
+                            val rData = rel.blockData
+                            if (rData is Leaves && rData.isPersistent) continue
+                        }
+
                         visited.add(rel)
                         queue.add(rel)
                     }
+                }
+            }
+        }
+
+        // Спавним кайфовые партиклы листвы и проигрываем звук, чтобы замена выглядела как фича
+        if (mainLeafData != null && particleLocs.isNotEmpty()) {
+            val world = start.world
+            world.playSound(start.location, Sound.BLOCK_AZALEA_LEAVES_BREAK, 1.5f, 0.8f)
+            particleLocs.forEach { loc ->
+                try {
+                    // Пробуем кастомные/новые партиклы FALLING_LEAVES (если есть в ядре)
+                    world.spawnParticle(Particle.valueOf("FALLING_LEAVES"), loc, 4, 0.3, 0.3, 0.3, 0.0)
+                } catch (e: Exception) {
+                    // Иначе фолбэк на красивую медленно падающую пыльцу цвета листвы
+                    world.spawnParticle(Particle.FALLING_DUST, loc, 4, 0.3, 0.3, 0.3, 0.0, mainLeafData)
                 }
             }
         }
@@ -1164,5 +1362,10 @@ object DynamicForestFeature : Listener {
         processTreeGrowth(marker, TreeStage.valueOf(stageStr), plugin.seasonManager.currentSeason, bx, by, bz, 15)
     }
 
-    fun stop() { task?.cancel(); task = null }
+    fun stop() {
+        masterWorker?.cancel()
+        masterWorker = null
+        treeGrowthWorker?.cancel()
+        treeGrowthWorker = null
+    }
 }

@@ -13,9 +13,10 @@ import vx.vivaldi.gameplay.feature.environment.WaterFreezingFeature
 @Configuration("gameplay.yml")
 class GameplayConfiguration {
 
-    val general     = GeneralConfig()
-    val worlds      = WorldsConfig()
-    val environment = EnvironmentSection()
+    val general       = GeneralConfig()
+    val worlds        = WorldsConfig()
+    val environment   = EnvironmentSection()
+    val dynamicForest = DynamicForestConfig()
 
     class GeneralConfig {
         @Comment("Message prefix.")
@@ -26,6 +27,14 @@ class GameplayConfiguration {
             "Please note that the plugin will still work and some gameplay mechanics will still affect the game (grass growth, custom trees)."
         )
         val enableSeasons = true
+    }
+
+    class DynamicForestConfig {
+        @Comment("How many unique trees of each type to pre-generate on startup.", "Higher value = more variety but slightly more RAM usage (100-300 is optimal).")
+        val treePoolSize: Int = 200
+
+        @Comment("Maximum tree replacement operations per tick when the server is perfectly smooth (TPS ~ 20.0).", "The plugin uses smart AI-like TPS monitoring and will dynamically lower this if the server starts to lag.")
+        val maxOperationsPerTick: Int = 20
     }
 
     class WorldsConfig {
