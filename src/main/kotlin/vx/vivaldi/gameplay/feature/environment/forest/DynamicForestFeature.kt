@@ -30,6 +30,7 @@ import org.bukkit.event.world.ChunkPopulateEvent
 import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
+import org.bukkit.profile.PlayerProfile
 import org.bukkit.scheduler.BukkitRunnable
 import vx.vivaldi.Vivaldi.Companion.plugin
 import vx.vivaldi.season.Season
@@ -51,11 +52,7 @@ object DynamicForestFeature : Listener {
     private val TREE_BASE_Z = NamespacedKey(plugin, "df_base_z")
     private val TREE_HEIGHT_KEY = NamespacedKey(plugin, "df_height")
     private val TREE_BP_ID_KEY = NamespacedKey(plugin, "df_bp_id")
-
-    private val BP_GROW_KEY = NamespacedKey(plugin, "df_bp_grow")
-    private val BP_THICKEN_KEY = NamespacedKey(plugin, "df_bp_thick")
-    private val BP_EXPAND_KEY = NamespacedKey(plugin, "df_bp_exp")
-    private val BP_HARDEN_KEY = NamespacedKey(plugin, "df_bp_harden")
+    private val TREE_VAR_IDX_KEY = NamespacedKey(plugin, "df_var_idx")
     private val PROG_KEY = NamespacedKey(plugin, "df_prog")
 
     private val REPLACED_TAG = NamespacedKey(plugin, "df_chunk_replaced")
@@ -87,42 +84,33 @@ object DynamicForestFeature : Listener {
     private var masterWorker: BukkitRunnable? = null
     private var treeGrowthWorker: BukkitRunnable? = null
 
-    // PSEUDO-PROCEDURAL GENERATION POOL
+    // MEMORY-BASED PREFAB SCHEMATICS
     private val treePool = ConcurrentHashMap<String, List<TreeStructureData>>()
+    private val skullProfileCache = ConcurrentHashMap<String, PlayerProfile>()
 
     enum class TreeStage { GROWING, THICKENING, EXPANDING, HARDENING, MATURE }
 
-    private data class BpBlock(val dx: Int, val dy: Int, val dz: Int, val mat: Material, val ext: String = "") {
-        override fun toString() = "$dx,$dy,$dz,${mat.name}" + if(ext.isNotEmpty()) ",$ext" else ""
-        companion object {
-            fun fromString(str: String): BpBlock? {
-                val p = str.split(",", limit = 5)
-                if (p.size < 4) return null
-                val mat = Material.getMaterial(p[3]) ?: return null
-                val ext = if (p.size > 4) p[4] else ""
-                return BpBlock(p[0].toInt(), p[1].toInt(), p[2].toInt(), mat, ext)
-            }
-        }
+    // Lightweight byte-based block data to minimize RAM footprint
+    class PrecomputedBlock(val dx: Byte, val dy: Byte, val dz: Byte, val mat: Material, val ext: String? = null)
+
+    private fun packCoord(dx: Int, dy: Int, dz: Int): Int {
+        return ((dx + 128) shl 16) or ((dy + 128) shl 8) or (dz + 128)
     }
 
-    data class Range(val min: Int, val max: Int) { fun random() = Random.nextInt(min, max + 1) }
+    class TreeStructureData(
+        val height: Int,
+        val growPhase: List<PrecomputedBlock>,
+        val thickenPhase: List<PrecomputedBlock>,
+        val expandPhase: List<PrecomputedBlock>,
+        val hardenPhase: List<PrecomputedBlock>,
+        val occupiedSpace: Set<Int> // O(1) lookup for bone-meal and logic
+    )
 
+    data class Range(val min: Int, val max: Int) { fun random() = Random.nextInt(min, max + 1) }
     data class DecorationRule(val buttonChance: Double = 0.05, val trapdoorChance: Double = 0.05)
     data class TrunkRule(val thickChance: Double = 0.0, val bottomMaterial: String, val bottomMaxHeight: Int, val middleMaterial: String, val middleHeightPercent: Double, val topMaterial: String, val bendChance: Double = 0.15, val stairsMaterial: String, val decorations: DecorationRule? = DecorationRule())
     data class RootRule(val material: String, val chance: Double, val maxDepth: Int)
-
-    data class BranchRule(
-        val count: Range,
-        val length: Range,
-        val startHeightPercent: Double,
-        val knotChance: Double,
-        val bareChance: Double? = 0.0,
-        val bareMaterial: String? = null,
-        val curveUpChance: Double? = 0.8,
-        val curveDownChance: Double? = 0.0,
-        val thickBaseLength: Int? = 1
-    )
-
+    data class BranchRule(val count: Range, val length: Range, val startHeightPercent: Double, val knotChance: Double, val bareChance: Double? = 0.0, val bareMaterial: String? = null, val curveUpChance: Double? = 0.8, val curveDownChance: Double? = 0.0, val thickBaseLength: Int? = 1)
     data class LeafRule(val materials: List<String>, val radius: Int, val density: Double, val startHeightPercent: Double, val shapeFocusY: Double, val shape: String = "OVAL", val vinesChance: Double = 0.0)
     data class FruitRule(val base64: String, val dropMaterial: String, val spawnChance: Double, val dropChance: Double, val attachTo: String = "LEAVES")
 
@@ -132,8 +120,6 @@ object DynamicForestFeature : Listener {
         fun getRootsRule(): RootRule = roots ?: RootRule(trunk.bottomMaterial, 0.4, 3)
         fun getDecorations(): DecorationRule = trunk.decorations ?: DecorationRule(0.0, 0.0)
     }
-
-    private class TreeStructureData(val height: Int, val growPhase: List<BpBlock>, val thickenPhase: List<BpBlock>, val expandPhase: List<BpBlock>, val hardenPhase: List<BpBlock>)
 
     private val blueprints = mutableMapOf<String, TreeBlueprint>()
     private val fruitMap = mutableMapOf<String, FruitRule>()
@@ -211,14 +197,25 @@ object DynamicForestFeature : Listener {
 
         blueprints.clear()
         fruitMap.clear()
+        skullProfileCache.clear()
 
         blueprintsDir.listFiles { _, name -> name.endsWith(".json") }?.forEach { file ->
             try {
                 val bp = gson.fromJson(file.readText(), TreeBlueprint::class.java)
                 blueprints[file.nameWithoutExtension] = bp
                 bp.fruits.forEach { fruit ->
-                    val url = getUrlFromBase64(fruit.base64)
-                    if (url != null) fruitMap[url] = fruit
+                    val urlStr = getUrlFromBase64(fruit.base64)
+                    if (urlStr != null) {
+                        fruitMap[urlStr] = fruit
+                        // Caching PlayerProfile on startup to avoid huge runtime lag
+                        try {
+                            val profile = Bukkit.createPlayerProfile(UUID.randomUUID())
+                            val textures = profile.textures
+                            textures.skin = URL(urlStr)
+                            profile.setTextures(textures)
+                            skullProfileCache[fruit.base64] = profile
+                        } catch (e: Exception) {}
+                    }
                 }
             }
             catch (e: Exception) { plugin.logger.warning("[DynamicForest] Failed to load blueprint from ${file.name}: ${e.message}") }
@@ -241,14 +238,14 @@ object DynamicForestFeature : Listener {
                 }
                 treePool[id] = list
             }
-            plugin.logger.info("[DynamicForest] Successfully pre-generated ${blueprints.size * pregenAmount} trees in ${System.currentTimeMillis() - start}ms.")
+            plugin.logger.info("[DynamicForest] Successfully pre-calculated ${blueprints.size * pregenAmount} tree schematics in RAM (${System.currentTimeMillis() - start}ms).")
         })
 
         masterWorker = object : BukkitRunnable() {
             var lastTick = System.currentTimeMillis()
             var tps = 20.0
             var currentTask: PendingChunkTask? = null
-            var currentOpLimit = 2.0
+            var currentOpLimit = 1.0
 
             override fun run() {
                 val now = System.currentTimeMillis()
@@ -257,20 +254,16 @@ object DynamicForestFeature : Listener {
                 tps = (tps * 0.9) + (currentTps * 0.1)
                 lastTick = now
 
-                val maxOps = try { plugin.gameplayManager.config.dynamicForest.maxOperationsPerTick.toDouble() } catch (e: Exception) { 40.0 }
+                val maxOps = try { plugin.gameplayManager.config.dynamicForest.maxOperationsPerTick.toDouble() } catch (e: Exception) { 30.0 }
 
                 if (tps >= 19.5) {
-                    currentOpLimit = minOf(maxOps, currentOpLimit + 1.5)
-                } else if (tps in 18.0..19.5) {
-                    // Stable
-                } else if (tps in 15.0..18.0) {
-                    currentOpLimit = maxOf(1.0, currentOpLimit * 0.7)
-                } else {
-                    currentOpLimit = 0.0
+                    currentOpLimit = minOf(maxOps, currentOpLimit + 0.5)
+                } else if (tps < 18.5) {
+                    currentOpLimit = maxOf(1.0, currentOpLimit * 0.5)
                 }
 
                 val opLimit = currentOpLimit.toInt()
-                val snapshotLimit = if (opLimit > 0) maxOf(1, opLimit / 5) else 0
+                val snapshotLimit = if (opLimit > 0) 1 else 0
 
                 for (i in 0 until snapshotLimit) {
                     val loc = chunkScanQueue.poll() ?: break
@@ -284,12 +277,11 @@ object DynamicForestFeature : Listener {
 
                 var operationsDone = 0
                 while (operationsDone < opLimit) {
-                    val task = currentTask ?: chunkTaskQueue.peek() ?: break
+                    val task = currentTask ?: chunkTaskQueue.poll() ?: break
                     currentTask = task
 
                     val world = Bukkit.getWorld(task.world)
                     if (world == null) {
-                        chunkTaskQueue.poll()
                         currentTask = null
                         continue
                     }
@@ -315,14 +307,13 @@ object DynamicForestFeature : Listener {
                                 .firstOrNull { it.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING) }
 
                             if (marker != null) {
-                                val percent = Random.nextDouble(0.90, 1.00)
+                                val percent = Random.nextDouble(0.92, 1.00)
                                 fastForwardTree(marker, percent)
                             }
                         }
                         operationsDone++
                     }
                     else {
-                        chunkTaskQueue.poll()
                         currentTask = null
                     }
                 }
@@ -332,38 +323,30 @@ object DynamicForestFeature : Listener {
 
         treeGrowthWorker = object : BukkitRunnable() {
             override fun run() {
-                val season = plugin.seasonManager.currentSeason
                 val worlds = Bukkit.getWorlds().filter { it.name in plugin.gameplayManager.allowedWorlds }
                 for (world in worlds) {
-                    val observers = world.players.filter { it.inventory.itemInMainHand.type == Material.SPYGLASS || it.inventory.itemInOffHand.type == Material.SPYGLASS }
                     val loadedChunks = world.loadedChunks.toList()
-                    for (chunk in loadedChunks.shuffled().take(30)) {
-                        for (entity in chunk.entities.toList()) {
+                    if (loadedChunks.isEmpty()) continue
+
+                    val season = plugin.seasonManager.currentSeason
+                    for (chunk in loadedChunks.shuffled().take(15)) {
+                        for (entity in chunk.entities) {
                             if (entity !is Marker || !entity.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING)) continue
+
                             val pdc = entity.persistentDataContainer
                             val stage = TreeStage.valueOf(pdc.get(TREE_STAGE_KEY, PersistentDataType.STRING) ?: TreeStage.GROWING.name)
-                            val baseX = pdc.get(TREE_BASE_X, PersistentDataType.INTEGER) ?: entity.location.blockX
-                            val baseY = pdc.get(TREE_BASE_Y, PersistentDataType.INTEGER) ?: entity.location.blockY
-                            val baseZ = pdc.get(TREE_BASE_Z, PersistentDataType.INTEGER) ?: entity.location.blockZ
+                            val bx = pdc.get(TREE_BASE_X, PersistentDataType.INTEGER) ?: entity.location.blockX
+                            val by = pdc.get(TREE_BASE_Y, PersistentDataType.INTEGER) ?: entity.location.blockY
+                            val bz = pdc.get(TREE_BASE_Z, PersistentDataType.INTEGER) ?: entity.location.blockZ
 
-                            if (observers.isNotEmpty() && stage != TreeStage.MATURE) {
-                                val allBlocks = parseList(pdc.get(BP_GROW_KEY, PersistentDataType.STRING)) + parseList(pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING)) + parseList(pdc.get(BP_HARDEN_KEY, PersistentDataType.STRING))
-                                allBlocks.shuffled().take(35).forEach { bp ->
-                                    if (bp.mat != Material.AIR) {
-                                        val color = if (bp.mat.name.contains("LEAVES") || bp.mat == Material.VINE) Particle.DustOptions(org.bukkit.Color.GREEN, 0.6f) else Particle.DustOptions(org.bukkit.Color.WHITE, 0.6f)
-                                        world.spawnParticle(Particle.DUST, baseX + bp.dx + 0.5, baseY + bp.dy + 0.5, baseZ + bp.dz + 0.5, 1, 0.0, 0.0, 0.0, 0.0, color)
-                                    }
-                                }
-                            }
-
-                            processTreeGrowth(entity, stage, season, baseX, baseY, baseZ, 0)
+                            processTreeGrowth(entity, stage, season, bx, by, bz, 0)
 
                             if (stage == TreeStage.MATURE) {
                                 if (season != Season.WINTER) {
-                                    animateLeaves(world, baseX, baseY, baseZ, pdc.get(TREE_HEIGHT_KEY, PersistentDataType.INTEGER) ?: 16, pdc.get(TREE_BP_ID_KEY, PersistentDataType.STRING) ?: "birch")
+                                    animateLeaves(world, bx, by, bz, pdc.get(TREE_HEIGHT_KEY, PersistentDataType.INTEGER) ?: 16, pdc.get(TREE_BP_ID_KEY, PersistentDataType.STRING) ?: "birch")
                                 }
                                 if (season == Season.AUTUMN && Random.nextDouble() < 0.05) {
-                                    dropRandomFruit(world, pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING), baseX, baseY, baseZ)
+                                    dropRandomFruit(world, entity, bx, by, bz)
                                 }
                             }
                         }
@@ -371,20 +354,27 @@ object DynamicForestFeature : Listener {
                 }
             }
         }
-        treeGrowthWorker?.runTaskTimer(plugin, 60L, 4L)
+        treeGrowthWorker?.runTaskTimer(plugin, 100L, 10L)
     }
 
-    private fun dropRandomFruit(world: org.bukkit.World, expandStr: String?, bx: Int, by: Int, bz: Int) {
-        if (expandStr == null) return
-        val blocks = parseList(expandStr)
-        val fruits = blocks.filter { it.mat == Material.PLAYER_HEAD || it.mat == Material.PLAYER_WALL_HEAD }
+    private fun getStructData(marker: Marker): TreeStructureData? {
+        val pdc = marker.persistentDataContainer
+        val bpId = pdc.get(TREE_BP_ID_KEY, PersistentDataType.STRING) ?: return null
+        val varIdx = pdc.get(TREE_VAR_IDX_KEY, PersistentDataType.INTEGER) ?: 0
+        return treePool[bpId]?.getOrNull(varIdx)
+    }
+
+    private fun dropRandomFruit(world: org.bukkit.World, marker: Marker, bx: Int, by: Int, bz: Int) {
+        val struct = getStructData(marker) ?: return
+        val fruits = struct.expandPhase.filter { it.ext != null && it.ext.startsWith("fruit:") }
         if (fruits.isEmpty()) return
 
         val target = fruits.random()
         val block = world.getBlockAt(bx + target.dx, by + target.dy, bz + target.dz)
         if (block.type == Material.PLAYER_HEAD || block.type == Material.PLAYER_WALL_HEAD) {
             val state = block.state as? org.bukkit.block.Skull ?: return
-            val skinUrl = state.ownerProfile?.textures?.skin?.toString() ?: return
+            val profile = state.ownerProfile ?: return
+            val skinUrl = profile.textures.skin?.toString() ?: return
             val fruitRule = fruitMap[skinUrl] ?: return
 
             block.setType(Material.AIR, false)
@@ -395,7 +385,7 @@ object DynamicForestFeature : Listener {
     }
 
     private fun getTreeMarkerForBlock(block: Block): Marker? {
-        val markers = block.world.getNearbyEntities(block.location, 32.0, 48.0, 32.0)
+        val markers = block.world.getNearbyEntities(block.location, 24.0, 40.0, 24.0)
             .filterIsInstance<Marker>()
             .filter { it.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING) }
 
@@ -406,36 +396,35 @@ object DynamicForestFeature : Listener {
             val bz = pdc.get(TREE_BASE_Z, PersistentDataType.INTEGER) ?: return@firstOrNull false
 
             val dx = block.x - bx; val dy = block.y - by; val dz = block.z - bz
-            val target = "$dx,$dy,$dz,"
-            val check = { s: String? -> s != null && (s.startsWith(target) || s.contains(";$target")) }
 
-            check(pdc.get(BP_GROW_KEY, PersistentDataType.STRING)) ||
-                    check(pdc.get(BP_THICKEN_KEY, PersistentDataType.STRING)) ||
-                    check(pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING)) ||
-                    check(pdc.get(BP_HARDEN_KEY, PersistentDataType.STRING))
+            // O(1) RAM Lookup instead of slow String parsing!
+            val packed = packCoord(dx, dy, dz)
+            val struct = getStructData(marker)
+            struct?.occupiedSpace?.contains(packed) == true
         }
     }
 
     private fun processTreeGrowth(marker: Marker, stage: TreeStage, season: Season, bx: Int, by: Int, bz: Int, forcedSteps: Int) {
         if (season == Season.WINTER && stage != TreeStage.MATURE && forcedSteps == 0) return
+
+        val struct = getStructData(marker) ?: return
         val pdc = marker.persistentDataContainer
         val world = marker.world
         var prog = pdc.get(PROG_KEY, PersistentDataType.INTEGER) ?: 0
 
-        val (currentBpKey, defaultBlocksPerTick, nextStage) = when (stage) {
-            TreeStage.GROWING -> Triple(BP_GROW_KEY, 3, TreeStage.THICKENING)
-            TreeStage.THICKENING -> Triple(BP_THICKEN_KEY, 2, TreeStage.EXPANDING)
-            TreeStage.EXPANDING -> Triple(BP_EXPAND_KEY, 4, TreeStage.HARDENING)
-            TreeStage.HARDENING -> Triple(BP_HARDEN_KEY, 2, TreeStage.MATURE)
+        val (phaseList, defaultBlocksPerTick, nextStage) = when (stage) {
+            TreeStage.GROWING -> Triple(struct.growPhase, 3, TreeStage.THICKENING)
+            TreeStage.THICKENING -> Triple(struct.thickenPhase, 2, TreeStage.EXPANDING)
+            TreeStage.EXPANDING -> Triple(struct.expandPhase, 4, TreeStage.HARDENING)
+            TreeStage.HARDENING -> Triple(struct.hardenPhase, 2, TreeStage.MATURE)
             TreeStage.MATURE -> return
         }
 
-        val blueprint = parseList(pdc.get(currentBpKey, PersistentDataType.STRING))
         val blocksToPlace = if (forcedSteps > 0) forcedSteps else defaultBlocksPerTick
 
         for (i in 0 until blocksToPlace) {
-            if (prog < blueprint.size) {
-                val bp = blueprint[prog]
+            if (prog < phaseList.size) {
+                val bp = phaseList[prog]
                 val block = world.getBlockAt(bx + bp.dx, by + bp.dy, bz + bp.dz)
 
                 if (bp.mat == Material.AIR) {
@@ -448,28 +437,24 @@ object DynamicForestFeature : Listener {
 
                     if (block.type == Material.AIR || block.type.name.contains("LEAVES") || block.type == Material.VINE || isWood || (isRoot && block.type in ROOT_REPLACEABLE) || block.type == Material.SHORT_GRASS) {
                         block.setType(bp.mat, false)
-                        setupBlockData(block, bp.ext)
+                        setupBlockData(block, bp.ext ?: "")
                     }
                 }
                 prog++
             } else break
         }
 
-        if (prog >= blueprint.size) {
+        if (prog >= phaseList.size) {
             pdc.set(TREE_STAGE_KEY, PersistentDataType.STRING, nextStage.name)
             pdc.set(PROG_KEY, PersistentDataType.INTEGER, 0)
         } else pdc.set(PROG_KEY, PersistentDataType.INTEGER, prog)
     }
 
     private fun fastForwardTree(marker: Marker, percent: Double) {
+        val struct = getStructData(marker) ?: return
         val pdc = marker.persistentDataContainer
 
-        val grow = parseList(pdc.get(BP_GROW_KEY, PersistentDataType.STRING))
-        val thicken = parseList(pdc.get(BP_THICKEN_KEY, PersistentDataType.STRING))
-        val expand = parseList(pdc.get(BP_EXPAND_KEY, PersistentDataType.STRING))
-        val harden = parseList(pdc.get(BP_HARDEN_KEY, PersistentDataType.STRING))
-
-        val total = grow.size + thicken.size + expand.size + harden.size
+        val total = struct.growPhase.size + struct.thickenPhase.size + struct.expandPhase.size + struct.hardenPhase.size
         var stepsLeft = (total * percent).toInt()
 
         val bx = pdc.get(TREE_BASE_X, PersistentDataType.INTEGER) ?: marker.location.blockX
@@ -482,10 +467,10 @@ object DynamicForestFeature : Listener {
 
             val stage = TreeStage.valueOf(stageStr)
             val list = when (stage) {
-                TreeStage.GROWING -> grow
-                TreeStage.THICKENING -> thicken
-                TreeStage.EXPANDING -> expand
-                TreeStage.HARDENING -> harden
+                TreeStage.GROWING -> struct.growPhase
+                TreeStage.THICKENING -> struct.thickenPhase
+                TreeStage.EXPANDING -> struct.expandPhase
+                TreeStage.HARDENING -> struct.hardenPhase
                 else -> emptyList()
             }
 
@@ -515,23 +500,22 @@ object DynamicForestFeature : Listener {
         Bukkit.getScheduler().runTaskLater(plugin, Runnable {
             if (!baseBlock.chunk.isLoaded) return@Runnable
             val world = baseBlock.world
-            for (dx in -4..4) {
-                for (dz in -4..4) {
-                    if (dx * dx + dz * dz <= 16 && Random.nextDouble() < 0.75) {
+            for (dx in -3..3) {
+                for (dz in -3..3) {
+                    if (dx * dx + dz * dz <= 9 && Random.nextDouble() < 0.6) {
                         val targetBlock = world.getHighestBlockAt(baseBlock.x + dx, baseBlock.z + dz)
                         if (Math.abs(targetBlock.y - baseBlock.y) > 3) continue
 
                         val below = targetBlock.getRelative(BlockFace.DOWN)
-                        if (below.type in SOIL_BLOCKS && below.type != Material.SNOW_BLOCK) {
-                            val hasSnow = ALL_FACES.any { targetBlock.getRelative(it).type == Material.SNOW }
-                            if (!hasSnow && (targetBlock.type.isAir || targetBlock.type == Material.SHORT_GRASS || targetBlock.type == Material.TALL_GRASS)) {
+                        if (below.type in SOIL_BLOCKS) {
+                            if (targetBlock.type.isAir) {
                                 targetBlock.setType(if (Random.nextDouble() < 0.1) Material.TALL_GRASS else Material.SHORT_GRASS, false)
                             }
                         }
                     }
                 }
             }
-        }, 30L)
+        }, 40L)
     }
 
     private fun spawnDynamicTreeBase(baseBlock: Block, blueprintId: String) {
@@ -544,34 +528,29 @@ object DynamicForestFeature : Listener {
         val pdc = marker.persistentDataContainer
 
         val pool = treePool[blueprintId]
-        val structure = if (pool != null && pool.isNotEmpty()) {
-            pool.random()
-        } else {
-            generateTreeStructure(blueprint)
-        }
+        val varIdx = if (pool != null && pool.isNotEmpty()) Random.nextInt(pool.size) else 0
+        val structure = pool?.getOrNull(varIdx) ?: generateTreeStructure(blueprint)
 
+        // Stripped NBT overhead to practically zero
         pdc.set(TREE_STAGE_KEY, PersistentDataType.STRING, TreeStage.GROWING.name)
         pdc.set(TREE_BP_ID_KEY, PersistentDataType.STRING, blueprintId)
+        pdc.set(TREE_VAR_IDX_KEY, PersistentDataType.INTEGER, varIdx)
         pdc.set(TREE_BASE_X, PersistentDataType.INTEGER, baseBlock.x)
         pdc.set(TREE_BASE_Y, PersistentDataType.INTEGER, baseBlock.y)
         pdc.set(TREE_BASE_Z, PersistentDataType.INTEGER, baseBlock.z)
         pdc.set(TREE_HEIGHT_KEY, PersistentDataType.INTEGER, structure.height)
-
-        pdc.set(BP_GROW_KEY, PersistentDataType.STRING, structure.growPhase.joinToString(";"))
-        pdc.set(BP_THICKEN_KEY, PersistentDataType.STRING, structure.thickenPhase.joinToString(";"))
-        pdc.set(BP_EXPAND_KEY, PersistentDataType.STRING, structure.expandPhase.joinToString(";"))
-        pdc.set(BP_HARDEN_KEY, PersistentDataType.STRING, structure.hardenPhase.joinToString(";"))
         pdc.set(PROG_KEY, PersistentDataType.INTEGER, 0)
 
         spawnGrassAroundTree(baseBlock)
     }
 
     private fun generateTreeStructure(blueprint: TreeBlueprint): TreeStructureData {
-        val growPhase = mutableListOf<BpBlock>()
-        val sortedGrowPhase = mutableListOf<Pair<Int, BpBlock>>()
-        val thickenPhase = mutableListOf<BpBlock>()
-        val expandPhase = mutableListOf<BpBlock>()
-        val hardenPhase = mutableListOf<BpBlock>()
+        val growPhase = mutableListOf<PrecomputedBlock>()
+        val sortedGrowPhase = mutableListOf<Pair<Int, PrecomputedBlock>>()
+        val thickenPhase = mutableListOf<PrecomputedBlock>()
+        val expandPhase = mutableListOf<PrecomputedBlock>()
+        val hardenPhase = mutableListOf<PrecomputedBlock>()
+        val occupiedSpace = mutableSetOf<Int>()
 
         val trunkNodes = mutableListOf<Triple<Int, Int, Int>>()
         val branchNodes = mutableListOf<Triple<Int, Int, Int>>()
@@ -622,12 +601,12 @@ object DynamicForestFeature : Listener {
                         val oppositeDir = if (dx > 0) "east" else if (dx < 0) "west" else if (dz > 0) "south" else "north"
 
                         if (stairsUsed < maxStairsAllowed) {
-                            hardenPhase.add(BpBlock(cx, cy - 1, cz, stairMat, "facing=$facingDir,half=top"))
-                            hardenPhase.add(BpBlock(oldX, cy + 1, oldZ, stairMat, "facing=$oppositeDir,half=bottom"))
+                            hardenPhase.add(PrecomputedBlock(cx.toByte(), (cy - 1).toByte(), cz.toByte(), stairMat, "facing=$facingDir,half=top"))
+                            hardenPhase.add(PrecomputedBlock(oldX.toByte(), (cy + 1).toByte(), oldZ.toByte(), stairMat, "facing=$oppositeDir,half=bottom"))
                             stairsUsed += 2
                         } else {
-                            hardenPhase.add(BpBlock(cx, cy - 1, cz, topMat))
-                            hardenPhase.add(BpBlock(oldX, cy + 1, oldZ, topMat))
+                            hardenPhase.add(PrecomputedBlock(cx.toByte(), (cy - 1).toByte(), cz.toByte(), topMat))
+                            hardenPhase.add(PrecomputedBlock(oldX.toByte(), (cy + 1).toByte(), oldZ.toByte(), topMat))
                         }
                         allWoodSet.add(Triple(cx, cy - 1, cz))
                         allWoodSet.add(Triple(oldX, cy + 1, oldZ))
@@ -662,17 +641,17 @@ object DynamicForestFeature : Listener {
 
                     for (l in 0 until len) {
                         bx += dx; bz += dz
-                        sortedGrowPhase.add(by to BpBlock(bx, by, bz, gateMat, "facing=$gateFace,in_wall=false,open=false"))
+                        sortedGrowPhase.add(by to PrecomputedBlock(bx.toByte(), by.toByte(), bz.toByte(), gateMat, "facing=$gateFace,in_wall=false,open=false"))
                         if (l == 0) {
-                            sortedGrowPhase.add((by + 1) to BpBlock(bx, by + 1, bz, trapdoorMat, "facing=$hinge,half=bottom,open=true"))
+                            sortedGrowPhase.add((by + 1) to PrecomputedBlock(bx.toByte(), (by + 1).toByte(), bz.toByte(), trapdoorMat, "facing=$hinge,half=bottom,open=true"))
                         } else {
-                            sortedGrowPhase.add((by + 1) to BpBlock(bx, by + 1, bz, trapdoorMat, "facing=$hinge,half=bottom,open=false"))
+                            sortedGrowPhase.add((by + 1) to PrecomputedBlock(bx.toByte(), (by + 1).toByte(), bz.toByte(), trapdoorMat, "facing=$hinge,half=bottom,open=false"))
                         }
                         allWoodSet.add(Triple(bx, by, bz)); allWoodSet.add(Triple(bx, by + 1, bz))
                         bareBranchSet.add(Triple(bx, by, bz)); bareBranchSet.add(Triple(bx, by + 1, bz))
                     }
                     bx += dx; bz += dz
-                    sortedGrowPhase.add((by + 1) to BpBlock(bx, by + 1, bz, trapdoorMat, "facing=$hinge,half=bottom,open=false"))
+                    sortedGrowPhase.add((by + 1) to PrecomputedBlock(bx.toByte(), (by + 1).toByte(), bz.toByte(), trapdoorMat, "facing=$hinge,half=bottom,open=false"))
                     allWoodSet.add(Triple(bx, by + 1, bz))
                     bareBranchSet.add(Triple(bx, by + 1, bz))
                     bCount++
@@ -693,9 +672,9 @@ object DynamicForestFeature : Listener {
                         branchNodes.add(Triple(bx, by, bz))
                         val fDir = if (dx > 0) "west" else "east"
                         if (stairsUsed < maxStairsAllowed) {
-                            sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, stairMat, "facing=$fDir,half=top"))
+                            sortedGrowPhase.add(by - 1 to PrecomputedBlock(bx.toByte(), (by - 1).toByte(), bz.toByte(), stairMat, "facing=$fDir,half=top"))
                             stairsUsed++
-                        } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, currentMat))
+                        } else sortedGrowPhase.add(by - 1 to PrecomputedBlock(bx.toByte(), (by - 1).toByte(), bz.toByte(), currentMat))
                         allWoodSet.add(Triple(bx, by - 1, bz))
 
                         if (Random.nextBoolean()) {
@@ -704,9 +683,9 @@ object DynamicForestFeature : Listener {
                             branchNodes.add(Triple(bx, by, bz))
                             val fDirZ = if (dz > 0) "north" else "south"
                             if (stairsUsed < maxStairsAllowed) {
-                                sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, stairMat, "facing=$fDirZ,half=top"))
+                                sortedGrowPhase.add(by - 1 to PrecomputedBlock(bx.toByte(), (by - 1).toByte(), bz.toByte(), stairMat, "facing=$fDirZ,half=top"))
                                 stairsUsed++
-                            } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, currentMat))
+                            } else sortedGrowPhase.add(by - 1 to PrecomputedBlock(bx.toByte(), (by - 1).toByte(), bz.toByte(), currentMat))
                             allWoodSet.add(Triple(bx, by - 1, bz))
                         }
                     } else {
@@ -715,9 +694,9 @@ object DynamicForestFeature : Listener {
                         branchNodes.add(Triple(bx, by, bz))
                         val fDir = if (dz > 0) "north" else "south"
                         if (stairsUsed < maxStairsAllowed) {
-                            sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, stairMat, "facing=$fDir,half=top"))
+                            sortedGrowPhase.add(by - 1 to PrecomputedBlock(bx.toByte(), (by - 1).toByte(), bz.toByte(), stairMat, "facing=$fDir,half=top"))
                             stairsUsed++
-                        } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, currentMat))
+                        } else sortedGrowPhase.add(by - 1 to PrecomputedBlock(bx.toByte(), (by - 1).toByte(), bz.toByte(), currentMat))
                         allWoodSet.add(Triple(bx, by - 1, bz))
 
                         if (Random.nextBoolean()) {
@@ -726,9 +705,9 @@ object DynamicForestFeature : Listener {
                             branchNodes.add(Triple(bx, by, bz))
                             val fDirX = if (dx > 0) "west" else "east"
                             if (stairsUsed < maxStairsAllowed) {
-                                sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, stairMat, "facing=$fDirX,half=top"))
+                                sortedGrowPhase.add(by - 1 to PrecomputedBlock(bx.toByte(), (by - 1).toByte(), bz.toByte(), stairMat, "facing=$fDirX,half=top"))
                                 stairsUsed++
-                            } else sortedGrowPhase.add(by - 1 to BpBlock(bx, by - 1, bz, currentMat))
+                            } else sortedGrowPhase.add(by - 1 to PrecomputedBlock(bx.toByte(), (by - 1).toByte(), bz.toByte(), currentMat))
                             allWoodSet.add(Triple(bx, by - 1, bz))
                         }
                     }
@@ -863,10 +842,10 @@ object DynamicForestFeature : Listener {
             if (n.second <= height * 0.2 && baseTypePhase1.name.contains("WALL")) {
                 extStr = "relief"
             }
-            sortedGrowPhase.add(n.second to BpBlock(n.first, n.second, n.third, baseTypePhase1, extStr))
+            sortedGrowPhase.add(n.second to PrecomputedBlock(n.first.toByte(), n.second.toByte(), n.third.toByte(), baseTypePhase1, extStr))
 
             if (isAbsoluteTop) {
-                sortedGrowPhase.add((n.second + 1) to BpBlock(n.first, n.second + 1, n.third, topMat))
+                sortedGrowPhase.add((n.second + 1) to PrecomputedBlock(n.first.toByte(), (n.second + 1).toByte(), n.third.toByte(), topMat))
                 allWoodSet.add(Triple(n.first, n.second + 1, n.third))
             }
 
@@ -888,8 +867,8 @@ object DynamicForestFeature : Listener {
                             if (shouldSpawn) {
                                 val p = Triple(n.first + dx, n.second + dy, n.third + dz)
                                 if (p !in allWoodSet && p !in finalLeafSet) {
-                                    sortedGrowPhase.add(n.second to BpBlock(p.first, p.second, p.third, tempLeafMat))
-                                    sortedGrowPhase.add((n.second + 4) to BpBlock(p.first, p.second, p.third, Material.AIR))
+                                    sortedGrowPhase.add(n.second to PrecomputedBlock(p.first.toByte(), p.second.toByte(), p.third.toByte(), tempLeafMat))
+                                    sortedGrowPhase.add((n.second + 4) to PrecomputedBlock(p.first.toByte(), p.second.toByte(), p.third.toByte(), Material.AIR))
                                 }
                             }
                         }
@@ -898,9 +877,9 @@ object DynamicForestFeature : Listener {
             }
 
             if (n.second <= wallMaxY) {
-                thickenPhase.add(BpBlock(n.first, n.second, n.third, if (n.second <= logMaxY) bottomMat else middleMat))
+                thickenPhase.add(PrecomputedBlock(n.first.toByte(), n.second.toByte(), n.third.toByte(), if (n.second <= logMaxY) bottomMat else middleMat))
             }
-            hardenPhase.add(BpBlock(n.first, n.second, n.third, bottomMat))
+            hardenPhase.add(PrecomputedBlock(n.first.toByte(), n.second.toByte(), n.third.toByte(), bottomMat))
 
             if (n.second in 2..(height-2) && thickness == 1) {
                 val face = HORIZONTAL_FACES.random()
@@ -908,9 +887,9 @@ object DynamicForestFeature : Listener {
 
                 if (Random.nextDouble() < decorRule.trapdoorChance) {
                     val tdMat = Material.getMaterial(blueprint.trunk.topMaterial.replace("_FENCE", "_TRAPDOOR").replace("_LOG", "_TRAPDOOR")) ?: trapdoorMat
-                    hardenPhase.add(BpBlock(n.first + face.modX, n.second, n.third + face.modZ, tdMat, "facing=$fDir,open=true,half=bottom"))
+                    hardenPhase.add(PrecomputedBlock((n.first + face.modX).toByte(), n.second.toByte(), (n.third + face.modZ).toByte(), tdMat, "facing=$fDir,open=true,half=bottom"))
                 } else if (Random.nextDouble() < decorRule.buttonChance) {
-                    hardenPhase.add(BpBlock(n.first + face.modX, n.second, n.third + face.modZ, btnMat, "facing=$fDir"))
+                    hardenPhase.add(PrecomputedBlock((n.first + face.modX).toByte(), n.second.toByte(), (n.third + face.modZ).toByte(), btnMat, "facing=$fDir"))
                 }
             }
         }
@@ -929,11 +908,11 @@ object DynamicForestFeature : Listener {
                     val placeRoot = { x: Int, z: Int ->
                         if (Triple(x, n.second, z) !in allWoodSet) {
                             allWoodSet.add(Triple(x, n.second, z))
-                            thickenPhase.add(BpBlock(x, n.second, z, rootMat, "relief"))
+                            thickenPhase.add(PrecomputedBlock(x.toByte(), n.second.toByte(), z.toByte(), rootMat, "relief"))
                             val depth = Random.nextInt(2, rootsRule.maxDepth + 2)
                             for (ry in -1 downTo -depth) {
                                 allWoodSet.add(Triple(x, ry, z))
-                                hardenPhase.add(BpBlock(x, ry, z, rootMat))
+                                hardenPhase.add(PrecomputedBlock(x.toByte(), ry.toByte(), z.toByte(), rootMat))
                             }
                         }
                     }
@@ -948,30 +927,29 @@ object DynamicForestFeature : Listener {
             for (ry in -1 downTo -mainDepth) {
                 if (Random.nextDouble() < 0.9) {
                     allWoodSet.add(Triple(n.first, ry, n.third))
-                    hardenPhase.add(BpBlock(n.first, ry, n.third, rootMat))
+                    hardenPhase.add(PrecomputedBlock(n.first.toByte(), ry.toByte(), n.third.toByte(), rootMat))
                 }
             }
         }
 
         branchBlocksWithMat.forEach { n ->
-            sortedGrowPhase.add(n.first.second to BpBlock(n.first.first, n.first.second, n.first.third, n.second))
+            sortedGrowPhase.add(n.first.second to PrecomputedBlock(n.first.first.toByte(), n.first.second.toByte(), n.first.third.toByte(), n.second))
         }
 
         val fruitLocations = mutableSetOf<Triple<Int, Int, Int>>()
-
         val leafMats = blueprint.getLeafMaterials()
 
         finalLeafSet.forEach { l ->
             if (l in bareBranchSet) return@forEach
             val leafMaterial = leafMats.randomOrNull() ?: Material.OAK_LEAVES
-            if (Random.nextBoolean()) sortedGrowPhase.add(l.second to BpBlock(l.first, l.second, l.third, leafMaterial))
-            else expandPhase.add(BpBlock(l.first, l.second, l.third, leafMaterial))
+            if (Random.nextBoolean()) sortedGrowPhase.add(l.second to PrecomputedBlock(l.first.toByte(), l.second.toByte(), l.third.toByte(), leafMaterial))
+            else expandPhase.add(PrecomputedBlock(l.first.toByte(), l.second.toByte(), l.third.toByte(), leafMaterial))
 
             if (Random.nextDouble() < 0.08) {
                 val py = l.second + 1
                 val pg = Triple(l.first, py, l.third)
                 if (pg !in finalLeafSet && pg !in allWoodSet) {
-                    expandPhase.add(BpBlock(pg.first, pg.second, pg.third, Material.SHORT_GRASS))
+                    expandPhase.add(PrecomputedBlock(pg.first.toByte(), pg.second.toByte(), pg.third.toByte(), Material.SHORT_GRASS))
                 }
             }
 
@@ -980,7 +958,7 @@ object DynamicForestFeature : Listener {
                     val p = Triple(l.first, l.second - 1, l.third)
                     if (p !in allWoodSet && p !in finalLeafSet && !fruitLocations.contains(p)) {
                         fruitLocations.add(p)
-                        expandPhase.add(BpBlock(p.first, p.second, p.third, Material.PLAYER_HEAD, "fruit:${fruit.base64}"))
+                        expandPhase.add(PrecomputedBlock(p.first.toByte(), p.second.toByte(), p.third.toByte(), Material.PLAYER_HEAD, "fruit:${fruit.base64}"))
                     }
                 }
             }
@@ -991,7 +969,7 @@ object DynamicForestFeature : Listener {
                     for (v in 1..len) {
                         val p = Triple(l.first, l.second - v, l.third)
                         if (p !in allWoodSet && p !in finalLeafSet && !fruitLocations.contains(p)) {
-                            expandPhase.add(BpBlock(p.first, p.second, p.third, Material.VINE))
+                            expandPhase.add(PrecomputedBlock(p.first.toByte(), p.second.toByte(), p.third.toByte(), Material.VINE))
                         } else break
                     }
                 }
@@ -1006,7 +984,7 @@ object DynamicForestFeature : Listener {
                     if (p !in allWoodSet && p !in finalLeafSet && !fruitLocations.contains(p)) {
                         fruitLocations.add(p)
                         val fDir = if (face == BlockFace.EAST) "east" else if (face == BlockFace.WEST) "west" else if (face == BlockFace.NORTH) "north" else "south"
-                        expandPhase.add(BpBlock(p.first, p.second, p.third, Material.PLAYER_WALL_HEAD, "fruit:${fruit.base64},facing=$fDir"))
+                        expandPhase.add(PrecomputedBlock(p.first.toByte(), p.second.toByte(), p.third.toByte(), Material.PLAYER_WALL_HEAD, "fruit:${fruit.base64},facing=$fDir"))
                     }
                 }
             }
@@ -1015,7 +993,11 @@ object DynamicForestFeature : Listener {
         sortedGrowPhase.sortBy { it.first }
         growPhase.addAll(sortedGrowPhase.map { it.second })
 
-        return TreeStructureData(height, growPhase, thickenPhase, expandPhase, hardenPhase)
+        // Precompute packed occupation set for O(1) marker lookup later
+        val totalBlocks = growPhase + thickenPhase + expandPhase + hardenPhase
+        totalBlocks.forEach { occupiedSpace.add(packCoord(it.dx.toInt(), it.dy.toInt(), it.dz.toInt())) }
+
+        return TreeStructureData(height, growPhase, thickenPhase, expandPhase, hardenPhase, occupiedSpace)
     }
 
     private fun setupBlockData(block: Block, ext: String = "") {
@@ -1036,14 +1018,11 @@ object DynamicForestFeature : Listener {
                     }
 
                     val state = block.state as org.bukkit.block.Skull
-                    val decoded = String(Base64.getDecoder().decode(base64))
-                    val urlStr = decoded.substringAfter("\"url\":\"").substringBefore("\"")
-                    val profile = Bukkit.createPlayerProfile(UUID.randomUUID())
-                    val textures = profile.textures
-                    textures.skin = URL(urlStr)
-                    profile.setTextures(textures)
-                    state.ownerProfile = profile
-                    state.update(true, false)
+                    val profile = skullProfileCache[base64]
+                    if (profile != null) {
+                        state.ownerProfile = profile
+                        state.update(true, false)
+                    }
                     return
                 } catch (e: Exception) { plugin.logger.warning("Failed to apply fruit texture: ${e.message}") }
             } else {
@@ -1118,11 +1097,6 @@ object DynamicForestFeature : Listener {
         }
     }
 
-    private fun parseList(str: String?): List<BpBlock> {
-        if (str.isNullOrEmpty()) return emptyList()
-        return str.split(";").mapNotNull { BpBlock.fromString(it) }
-    }
-
     private fun animateLeaves(world: org.bukkit.World, bx: Int, by: Int, bz: Int, height: Int, bpId: String) {
         val blueprint = blueprints[bpId] ?: return
         val leafMats = blueprint.getLeafMaterials()
@@ -1146,7 +1120,8 @@ object DynamicForestFeature : Listener {
         val block = event.block
         if (block.type == Material.PLAYER_HEAD || block.type == Material.PLAYER_WALL_HEAD) {
             val state = block.state as? org.bukkit.block.Skull ?: return
-            val skinUrl = state.ownerProfile?.textures?.skin?.toString() ?: return
+            val profile = state.ownerProfile ?: return
+            val skinUrl = profile.textures.skin?.toString() ?: return
             val fruit = fruitMap[skinUrl]
             if (fruit != null) {
                 event.isCancelled = true
@@ -1165,7 +1140,8 @@ object DynamicForestFeature : Listener {
         val block = event.clickedBlock ?: return
         if (block.type == Material.PLAYER_HEAD || block.type == Material.PLAYER_WALL_HEAD) {
             val state = block.state as? org.bukkit.block.Skull ?: return
-            val skinUrl = state.ownerProfile?.textures?.skin?.toString() ?: return
+            val profile = state.ownerProfile ?: return
+            val skinUrl = profile.textures.skin?.toString() ?: return
             val fruit = fruitMap[skinUrl]
             if (fruit != null) {
                 event.isCancelled = true
@@ -1238,16 +1214,17 @@ object DynamicForestFeature : Listener {
                 for (z in 0..15) {
                     var topY = snapshot.getHighestBlockYAt(x, z)
 
-                    while (topY > 0) {
+                    while (topY > 60) { // Optimize: dont scan to y=0
                         val t = snapshot.getBlockType(x, topY, z)
                         if (!t.isAir && t != Material.SNOW && t != Material.VINE) break
                         topY--
                     }
+                    if (topY <= 60) continue
                     val topType = snapshot.getBlockType(x, topY, z)
 
                     if (!topType.name.contains("LEAVES")) continue
 
-                    for (y in 50..topY) {
+                    for (y in 60..topY) {
                         val type = snapshot.getBlockType(x, y, z)
                         if (type.name.endsWith("_LOG") || type.name.endsWith("_WOOD")) {
                             val belowType = snapshot.getBlockType(x, y - 1, z)
@@ -1281,6 +1258,7 @@ object DynamicForestFeature : Listener {
         var count = 0
         var mainLeafData: org.bukkit.block.data.BlockData? = null
         val particleLocs = mutableListOf<org.bukkit.Location>()
+        val world = start.world
 
         while(queue.isNotEmpty() && count < 1000) {
             val b = queue.removeFirst()
@@ -1297,13 +1275,19 @@ object DynamicForestFeature : Listener {
             b.setType(Material.AIR, false)
 
             val up = b.getRelative(BlockFace.UP)
-            if (up.type == Material.SNOW) up.setType(Material.AIR, false)
+            if (up.chunk.isLoaded && up.type == Material.SNOW) up.setType(Material.AIR, false)
 
             count++
 
             for (face in ALL_FACES) {
+                // Prevent cascading generation out of bounds
+                val relX = b.x + face.modX
+                val relZ = b.z + face.modZ
+                if (relX shr 4 != start.x shl 4 || relZ shr 4 != start.z shl 4) {
+                    if (!world.isChunkLoaded(relX shr 4, relZ shr 4)) continue
+                }
+
                 val rel = b.getRelative(face)
-                if (!rel.chunk.isLoaded) continue
                 if (rel !in visited) {
                     val rType = rel.type
                     if (rType == logMat || rType in leavesMats || rType == Material.VINE || rType == Material.COCOA) {
@@ -1319,7 +1303,6 @@ object DynamicForestFeature : Listener {
         }
 
         if (mainLeafData != null && particleLocs.isNotEmpty()) {
-            val world = start.world
             world.playSound(start.location, Sound.BLOCK_AZALEA_LEAVES_BREAK, 1.5f, 0.8f)
             particleLocs.forEach { loc ->
                 try {
