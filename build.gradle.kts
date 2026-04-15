@@ -9,8 +9,8 @@ plugins {
 }
 
 group = "vivaldi"
-version = "1.0.3"
-description = "Simulating the living world."
+version = "1.0.4"
+description = "Embark into unexplored and wild world of nature."
 
 bukkitPluginYaml {
     name = "vivaldi"

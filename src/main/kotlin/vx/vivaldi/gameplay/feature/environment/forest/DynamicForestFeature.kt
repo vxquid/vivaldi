@@ -157,7 +157,7 @@ object DynamicForestFeature : Listener {
         val files = blueprintsDir.listFiles { _, name -> name.endsWith(".json") }
         if (files == null || files.isEmpty()) {
 
-            val defaultBirch = TreeBlueprint("PALE_OAK_FENCE", Range(14, 19), Range(0, 2),
+            val defaultBirch = TreeBlueprint("PALE_OAK_FENCE", Range(16, 21), Range(0, 2),
                 TrunkRule(0.0, "BIRCH_WOOD", 2, "DIORITE_WALL", 0.4, "PALE_OAK_FENCE", 0.02, "ANDESITE_STAIRS", DecorationRule(0.02, 0.01)),
                 RootRule("BIRCH_WOOD", 0.3, 3),
                 BranchRule(Range(2, 5), Range(1, 3), 0.45, 0.08, 0.0, "BIRCH", 0.9, 0.0, 1),
@@ -167,21 +167,21 @@ object DynamicForestFeature : Listener {
             val goldenAppleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZTkyZWFhY2QyOTBlYWQzN2ViMWEyMDJhYzczNjdmMzJiZTc0Y2Y0YWM3NzIzZTA2N2M0NjU4YmY2MmMzZGJkNiJ9fX0="
             val cocoaBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvMjExNmI5ZDhkZjM0NmEyNWVkZDA1Zjg0MmU3YTkzNDViZWFmMTZkY2E0MTE4YWJmNWE2OGM3NWJjYWFlMTAifX19"
 
-            val defaultOak = TreeBlueprint("DARK_OAK_FENCE", Range(16, 24), Range(0, 3),
-                TrunkRule(0.05, "OAK_WOOD", 3, "MUD_BRICK_WALL", 0.45, "DARK_OAK_FENCE", 0.15, "DARK_OAK_STAIRS", DecorationRule(0.05, 0.04)),
+            val defaultOak = TreeBlueprint("SPRUCE_FENCE", Range(18, 26), Range(0, 3),
+                TrunkRule(0.05, "OAK_WOOD", 3, "MUD_BRICK_WALL", 0.45, "SPRUCE_FENCE", 0.15, "SPRUCE_STAIRS", DecorationRule(0.05, 0.04)),
                 RootRule("OAK_WOOD", 0.5, 4),
                 BranchRule(Range(4, 7), Range(2, 4), 0.35, 0.15, 0.15, "SPRUCE", 0.6, 0.1, 1),
-                LeafRule(listOf("OAK_LEAVES", "BIRCH_LEAVES", "SPRUCE_LEAVES"), 4, 0.75, 0.35, 0.0, "OVAL", 0.0), listOf(
+                LeafRule(listOf("OAK_LEAVES"), 4, 0.75, 0.35, 0.0, "OVAL", 0.0), listOf(
                     FruitRule(appleBase64, "APPLE", 0.015, 0.6, "LEAVES"), FruitRule(goldenAppleBase64, "GOLDEN_APPLE", 0.001, 1.0, "LEAVES")
                 ))
 
-            val defaultSpruce = TreeBlueprint("DARK_OAK_FENCE", Range(18, 25), Range(0, 1),
-                TrunkRule(0.0, "SPRUCE_WOOD", 3, "NETHER_BRICK_WALL", 0.5, "DARK_OAK_FENCE", 0.05, "SPRUCE_STAIRS", DecorationRule(0.03, 0.08)),
+            val defaultSpruce = TreeBlueprint("DARK_OAK_FENCE", Range(20, 27), Range(0, 1),
+                TrunkRule(0.15, "SPRUCE_WOOD", 3, "NETHER_BRICK_WALL", 0.5, "DARK_OAK_FENCE", 0.05, "SPRUCE_STAIRS", DecorationRule(0.03, 0.08)),
                 RootRule("SPRUCE_WOOD", 0.4, 3),
                 BranchRule(Range(3, 6), Range(1, 2), 0.35, 0.1, 0.0, "DARK_OAK", 0.2, 0.4, 1),
-                LeafRule(listOf("SPRUCE_LEAVES"), 4, 0.85, 0.3, 0.0, "CONE", 0.0))
+                LeafRule(listOf("SPRUCE_LEAVES"), 4, 0.9, 0.3, 0.0, "CONE", 0.0))
 
-            val defaultAcacia = TreeBlueprint("ACACIA_FENCE", Range(15, 22), Range(0, 2),
+            val defaultAcacia = TreeBlueprint("ACACIA_FENCE", Range(17, 24), Range(0, 2),
                 TrunkRule(0.0, "ACACIA_WOOD", 2, "TUFF_WALL", 0.55, "ACACIA_FENCE", 0.25, "TUFF_STAIRS", DecorationRule(0.01, 0.02)),
                 RootRule("ACACIA_WOOD", 0.2, 2),
                 BranchRule(Range(3, 6), Range(3, 5), 0.4, 0.15, 0.0, "ACACIA", 0.3, 0.0, 2),
@@ -191,11 +191,11 @@ object DynamicForestFeature : Listener {
                 TrunkRule(0.4, "JUNGLE_WOOD", 6, "JUNGLE_LOG", 0.6, "JUNGLE_FENCE", 0.05, "JUNGLE_STAIRS", DecorationRule(0.06, 0.03)),
                 RootRule("JUNGLE_WOOD", 0.7, 4),
                 BranchRule(Range(4, 7), Range(3, 6), 0.5, 0.1, 0.2, "JUNGLE", 0.7, 0.2, 2),
-                LeafRule(listOf("JUNGLE_LEAVES"), 4, 0.65, 0.55, 0.2, "OVAL", 0.15), listOf(
+                LeafRule(listOf("JUNGLE_LEAVES"), 4, 0.55, 0.55, 0.2, "OVAL", 0.15), listOf(
                     FruitRule(cocoaBase64, "COCOA_BEANS", 0.08, 0.8, "TRUNK")
                 ))
 
-            val defaultDarkOak = TreeBlueprint("DARK_OAK_FENCE", Range(16, 20), Range(0, 0),
+            val defaultDarkOak = TreeBlueprint("DARK_OAK_FENCE", Range(18, 22), Range(0, 0),
                 TrunkRule(0.3, "DARK_OAK_WOOD", 4, "DARK_OAK_LOG", 0.5, "DARK_OAK_FENCE", 0.1, "DARK_OAK_STAIRS", DecorationRule(0.05, 0.05)),
                 RootRule("DARK_OAK_WOOD", 0.6, 4),
                 BranchRule(Range(4, 8), Range(3, 5), 0.4, 0.1, 0.15, "DARK_OAK", 0.5, 0.1, 1),
@@ -244,39 +244,32 @@ object DynamicForestFeature : Listener {
             plugin.logger.info("[DynamicForest] Successfully pre-generated ${blueprints.size * pregenAmount} trees in ${System.currentTimeMillis() - start}ms.")
         })
 
-        // Инициализируем Умного Воркера (Адаптивный алгоритм AIMD: Additive Increase / Multiplicative Decrease)
         masterWorker = object : BukkitRunnable() {
             var lastTick = System.currentTimeMillis()
             var tps = 20.0
             var currentTask: PendingChunkTask? = null
-            var currentOpLimit = 2.0 // Текущая "скорость" воркера
+            var currentOpLimit = 2.0
 
             override fun run() {
                 val now = System.currentTimeMillis()
                 val delta = now - lastTick
                 val currentTps = if (delta > 0) 1000.0 / delta else 20.0
-                tps = (tps * 0.9) + (currentTps * 0.1) // Плавное сглаживание TPS
+                tps = (tps * 0.9) + (currentTps * 0.1)
                 lastTick = now
 
                 val maxOps = try { plugin.gameplayManager.config.dynamicForest.maxOperationsPerTick.toDouble() } catch (e: Exception) { 40.0 }
 
-                // Динамический контроль "коробки передач" нашего воркера
                 if (tps >= 19.5) {
-                    // Серверу отлично, плавно разгоняемся до максимума (Additive Increase)
                     currentOpLimit = minOf(maxOps, currentOpLimit + 1.5)
                 } else if (tps in 18.0..19.5) {
-                    // Стабильно, держим плато. Ничего не меняем.
+                    // Stable
                 } else if (tps in 15.0..18.0) {
-                    // Начинаются лаги, жестко сбрасываем скорость (Multiplicative Decrease)
                     currentOpLimit = maxOf(1.0, currentOpLimit * 0.7)
                 } else {
-                    // Серверу очень плохо (<15 TPS), жмем по тормозам
                     currentOpLimit = 0.0
                 }
 
                 val opLimit = currentOpLimit.toInt()
-
-                // Пропорционально масштабируем создание снапшотов
                 val snapshotLimit = if (opLimit > 0) maxOf(1, opLimit / 5) else 0
 
                 for (i in 0 until snapshotLimit) {
@@ -289,7 +282,6 @@ object DynamicForestFeature : Listener {
                     }
                 }
 
-                // Этап выполнения замены с учетом жесткого рассчитанного лимита (opLimit)
                 var operationsDone = 0
                 while (operationsDone < opLimit) {
                     val task = currentTask ?: chunkTaskQueue.peek() ?: break
@@ -302,7 +294,6 @@ object DynamicForestFeature : Listener {
                         continue
                     }
 
-                    // Фаза 1: Удаляем ванильные деревья по очереди (чтобы не зацепить кроны новых)
                     if (task.deleteIndex < task.trees.size) {
                         val tree = task.trees[task.deleteIndex++]
                         val block = world.getBlockAt(tree.x, tree.y, tree.z)
@@ -313,7 +304,6 @@ object DynamicForestFeature : Listener {
                         }
                         operationsDone++
                     }
-                    // Фаза 2: После полного удаления спавним кастомные на чистом пустом месте
                     else if (task.spawnIndex < task.trees.size) {
                         val tree = task.trees[task.spawnIndex++]
                         val block = world.getBlockAt(tree.x, tree.y, tree.z)
@@ -331,7 +321,6 @@ object DynamicForestFeature : Listener {
                         }
                         operationsDone++
                     }
-                    // Чанк полностью завершен, берем следующий
                     else {
                         chunkTaskQueue.poll()
                         currentTask = null
@@ -341,7 +330,6 @@ object DynamicForestFeature : Listener {
         }
         masterWorker?.runTaskTimer(plugin, 1L, 1L)
 
-        // Воркер для постепенного роста уже установленных деревьев
         treeGrowthWorker = object : BukkitRunnable() {
             override fun run() {
                 val season = plugin.seasonManager.currentSeason
@@ -776,18 +764,48 @@ object DynamicForestFeature : Listener {
         (trunkNodes + branchNodes).forEach { allWoodSet.add(it) }
 
         if (isCone) {
-            val coneHeight = height - lStartY + 1
-            if (coneHeight > 0) {
-                for (dy in 0..coneHeight) {
-                    val progress = dy.toDouble() / coneHeight.toDouble()
-                    val maxR = r * (1.0 - Math.pow(progress, 1.5)) + 0.8
-                    val limit = Math.ceil(maxR).toInt()
-                    for (dx in -limit..limit) {
-                        for (dz in -limit..limit) {
-                            if (dx * dx + dz * dz <= (maxR * maxR) + Random.nextDouble() * 1.5) {
-                                if (Random.nextDouble() < blueprint.leaves.density) {
-                                    val p = Triple(cx + dx, lStartY + dy, cz + dz)
-                                    if (p !in allWoodSet) finalLeafSet.add(p)
+            val coneTop = height + Random.nextInt(1, 3)
+            var currentRadius = 0.5
+
+            for (cy in coneTop downTo lStartY) {
+                val distFromTop = coneTop - cy
+
+                if (distFromTop <= 2) {
+                    for (ox in 0 until thickness) {
+                        for (oz in 0 until thickness) {
+                            finalLeafSet.add(Triple(cx + ox, cy, cz + oz))
+                        }
+                    }
+                    if (distFromTop == 2) {
+                        for (ox in 0 until thickness) {
+                            for (oz in 0 until thickness) {
+                                finalLeafSet.add(Triple(cx + ox + 1, cy, cz + oz))
+                                finalLeafSet.add(Triple(cx + ox - 1, cy, cz + oz))
+                                finalLeafSet.add(Triple(cx + ox, cy, cz + oz + 1))
+                                finalLeafSet.add(Triple(cx + ox, cy, cz + oz - 1))
+                            }
+                        }
+                    }
+                } else if (distFromTop % 2 == 1) {
+                    currentRadius += Random.nextDouble(0.4, 0.9)
+                    val effRadius = minOf(currentRadius, r.toDouble())
+                    val limit = Math.ceil(effRadius).toInt()
+
+                    for (dx in -limit..limit + (thickness - 1)) {
+                        for (dz in -limit..limit + (thickness - 1)) {
+                            val distX = if (dx < 0) -dx else if (dx >= thickness) dx - (thickness - 1) else 0
+                            val distZ = if (dz < 0) -dz else if (dz >= thickness) dz - (thickness - 1) else 0
+                            val dist = distX + distZ
+
+                            val fuzzyRadius = effRadius + if (Random.nextDouble() < 0.4) 1.0 else 0.0
+
+                            if (dist <= fuzzyRadius) {
+                                val isCore = dist <= effRadius - 1.0
+                                if (isCore || Random.nextDouble() < blueprint.leaves.density) {
+                                    finalLeafSet.add(Triple(cx + dx, cy, cz + dz))
+                                    if (dist >= effRadius - 1.0 && Random.nextDouble() < 0.3) {
+                                        finalLeafSet.add(Triple(cx + dx, cy - 1, cz + dz))
+                                    }
                                 }
                             }
                         }
@@ -1039,7 +1057,6 @@ object DynamicForestFeature : Listener {
         val type = block.type
         if (type.name.contains("LEAVES")) {
             val bData = block.blockData as Leaves
-            // Это КЛЮЧЕВАЯ метка! persistent = true защитит эти листья от случайного удаления алгоритмом в будущем!
             bData.isPersistent = true; bData.distance = 1; block.setBlockData(bData, false)
         } else if (type == Material.VINE) {
             val bData = block.blockData as MultipleFacing
@@ -1165,7 +1182,6 @@ object DynamicForestFeature : Listener {
         if (chunk.world.name !in plugin.gameplayManager.allowedWorlds) return
 
         val pdc = chunk.persistentDataContainer
-        // Защита от двойного сканирования
         if (pdc.has(REPLACED_TAG, PersistentDataType.BYTE)) return
         pdc.set(REPLACED_TAG, PersistentDataType.BYTE, 1.toByte())
 
@@ -1173,7 +1189,6 @@ object DynamicForestFeature : Listener {
         val cx = chunk.x
         val cz = chunk.z
 
-        // Добавляем в очередь спустя 3 секунды, чтобы дать ванильной генерации закончить свои дела без лагов
         Bukkit.getScheduler().runTaskLater(plugin, Runnable {
             chunkScanQueue.add(ChunkLocation(worldName, cx, cz))
         }, 60L)
@@ -1213,7 +1228,6 @@ object DynamicForestFeature : Listener {
         }
     }
 
-    // Асинхронный воркер сканирования
     private fun scanChunkAsync(worldName: String, snapshot: ChunkSnapshot) {
         Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
             val chunkX = snapshot.x
@@ -1252,7 +1266,6 @@ object DynamicForestFeature : Listener {
                 }
             }
 
-            // Перекидываем результаты в очередь на синхронную замену целого чанка
             if (trees.isNotEmpty()) {
                 chunkTaskQueue.add(PendingChunkTask(worldName, trees))
             }
@@ -1275,7 +1288,6 @@ object DynamicForestFeature : Listener {
 
             if (type in leavesMats) {
                 val bData = b.blockData
-                // Защита! Игнорируем и не ломаем persistent листья (поставленные игроками или сгенерированные нами ранее)
                 if (bData is Leaves && bData.isPersistent) continue
 
                 mainLeafData = mainLeafData ?: bData
@@ -1291,17 +1303,14 @@ object DynamicForestFeature : Listener {
 
             for (face in ALL_FACES) {
                 val rel = b.getRelative(face)
-                if (!rel.chunk.isLoaded) continue // Защита от каскадной загрузки чанков
+                if (!rel.chunk.isLoaded) continue
                 if (rel !in visited) {
                     val rType = rel.type
                     if (rType == logMat || rType in leavesMats || rType == Material.VINE || rType == Material.COCOA) {
-
-                        // Если это листва, превентивно проверяем persistent ли она, чтобы даже не добавлять её в очередь
                         if (rType in leavesMats) {
                             val rData = rel.blockData
                             if (rData is Leaves && rData.isPersistent) continue
                         }
-
                         visited.add(rel)
                         queue.add(rel)
                     }
@@ -1309,16 +1318,13 @@ object DynamicForestFeature : Listener {
             }
         }
 
-        // Спавним кайфовые партиклы листвы и проигрываем звук, чтобы замена выглядела как фича
         if (mainLeafData != null && particleLocs.isNotEmpty()) {
             val world = start.world
             world.playSound(start.location, Sound.BLOCK_AZALEA_LEAVES_BREAK, 1.5f, 0.8f)
             particleLocs.forEach { loc ->
                 try {
-                    // Пробуем кастомные/новые партиклы FALLING_LEAVES (если есть в ядре)
                     world.spawnParticle(Particle.valueOf("FALLING_LEAVES"), loc, 4, 0.3, 0.3, 0.3, 0.0)
                 } catch (e: Exception) {
-                    // Иначе фолбэк на красивую медленно падающую пыльцу цвета листвы
                     world.spawnParticle(Particle.FALLING_DUST, loc, 4, 0.3, 0.3, 0.3, 0.0, mainLeafData)
                 }
             }
