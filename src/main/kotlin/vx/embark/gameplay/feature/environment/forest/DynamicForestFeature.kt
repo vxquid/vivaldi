@@ -260,7 +260,7 @@ object DynamicForestFeature : Listener {
                     }
                 }
             }
-            catch (e: Exception) { plugin.logger.warning("[DynamicForest] Failed to load blueprint from ${file.name}: ${e.message}") }
+            catch (e: Exception) { plugin.logger.warning("Failed to load blueprint from ${file.name}: ${e.message}") }
         }
     }
 
@@ -270,7 +270,7 @@ object DynamicForestFeature : Listener {
 
         val pregenAmount = config.treePoolSize
 
-        plugin.logger.info("[DynamicForest] Pre-generating tree pool ($pregenAmount per blueprint)...")
+        plugin.logger.info("Pre-generating tree pool ($pregenAmount per blueprint)...")
         Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
             val start = System.currentTimeMillis()
             blueprints.forEach { (id, bp) ->
@@ -280,7 +280,7 @@ object DynamicForestFeature : Listener {
                 }
                 treePool[id] = list
             }
-            plugin.logger.info("[DynamicForest] Successfully pre-calculated ${blueprints.size * pregenAmount} tree schematics in RAM (${System.currentTimeMillis() - start}ms).")
+            plugin.logger.info("Successfully pre-calculated ${blueprints.size * pregenAmount} tree schematics in RAM (${System.currentTimeMillis() - start}ms).")
         })
 
         masterWorker = object : BukkitRunnable() {
