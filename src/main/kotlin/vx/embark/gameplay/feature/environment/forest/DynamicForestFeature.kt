@@ -32,6 +32,7 @@ import org.bukkit.profile.PlayerProfile
 import org.bukkit.scheduler.BukkitRunnable
 import vx.embark.Wilderness.Companion.gson
 import vx.embark.Wilderness.Companion.plugin
+import vx.embark.config.GameplayConfiguration
 import vx.embark.season.Season
 import java.io.File
 import java.net.URL
@@ -85,6 +86,10 @@ object DynamicForestFeature : Listener {
     private val treePool = ConcurrentHashMap<String, List<TreeStructureData>>()
     private val skullProfileCache = ConcurrentHashMap<String, PlayerProfile>()
 
+    // CONFIG GETTER
+    private val config: GameplayConfiguration.DynamicForestConfig
+        get() = plugin.gameplayManager.config.dynamicForest
+
     enum class TreeStage { GROWING, THICKENING, EXPANDING, HARDENING, MATURE }
 
     // Lightweight byte-based block data to minimize RAM footprint
@@ -122,8 +127,11 @@ object DynamicForestFeature : Listener {
     private val fruitMap = mutableMapOf<String, FruitRule>()
 
     init {
-        loadBlueprints()
-        start()
+        // Init happens eagerly, but we only load if enabled
+        if (config.enabled) {
+            loadBlueprints()
+            start()
+        }
     }
 
     private fun getUrlFromBase64(base64: String): String? {
@@ -220,10 +228,10 @@ object DynamicForestFeature : Listener {
     }
 
     private fun start() {
-        var pregenAmount = 150
-        try {
-            pregenAmount = plugin.gameplayManager.config.dynamicForest.treePoolSize
-        } catch (e: Exception) {}
+        stop() // Ensure clean start if reloaded
+        if (!config.enabled) return
+
+        val pregenAmount = config.treePoolSize
 
         plugin.logger.info("[DynamicForest] Pre-generating tree pool ($pregenAmount per blueprint)...")
         Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
@@ -245,13 +253,15 @@ object DynamicForestFeature : Listener {
             var currentOpLimit = 1.0
 
             override fun run() {
+                if (!config.enabled) return
+
                 val now = System.currentTimeMillis()
                 val delta = now - lastTick
                 val currentTps = if (delta > 0) 1000.0 / delta else 20.0
                 tps = (tps * 0.9) + (currentTps * 0.1)
                 lastTick = now
 
-                val maxOps = try { plugin.gameplayManager.config.dynamicForest.maxOperationsPerTick.toDouble() } catch (e: Exception) { 30.0 }
+                val maxOps = config.maxOperationsPerTick.toDouble()
 
                 if (tps >= 19.5) {
                     currentOpLimit = minOf(maxOps, currentOpLimit + 0.5)
@@ -298,11 +308,7 @@ object DynamicForestFeature : Listener {
                         val block = world.getBlockAt(tree.x, tree.y, tree.z)
 
                         if (block.chunk.isLoaded) {
-                            spawnDynamicTreeBase(block, tree.bpId)
-                            val marker = block.world.getNearbyEntities(block.location.add(0.5, 0.0, 0.5), 0.5, 0.5, 0.5)
-                                .filterIsInstance<Marker>()
-                                .firstOrNull { it.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING) }
-
+                            val marker = spawnDynamicTreeBase(block, tree.bpId)
                             if (marker != null) {
                                 val percent = Random.nextDouble(0.92, 1.00)
                                 fastForwardTree(marker, percent)
@@ -320,13 +326,15 @@ object DynamicForestFeature : Listener {
 
         treeGrowthWorker = object : BukkitRunnable() {
             override fun run() {
+                if (!config.enabled) return
+
                 val worlds = Bukkit.getWorlds().filter { it.name in plugin.gameplayManager.allowedWorlds }
                 for (world in worlds) {
                     val loadedChunks = world.loadedChunks.toList()
                     if (loadedChunks.isEmpty()) continue
 
                     val season = plugin.seasonManager.currentSeason
-                    for (chunk in loadedChunks.shuffled().take(15)) {
+                    for (chunk in loadedChunks.shuffled().take(config.maxChunksProcessedPerGrowthTick)) {
                         for (entity in chunk.entities) {
                             if (entity !is Marker || !entity.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING)) continue
 
@@ -342,7 +350,7 @@ object DynamicForestFeature : Listener {
                                 if (season != Season.WINTER) {
                                     animateLeaves(world, bx, by, bz, pdc.get(TREE_HEIGHT_KEY, PersistentDataType.INTEGER) ?: 16, pdc.get(TREE_BP_ID_KEY, PersistentDataType.STRING) ?: "birch")
                                 }
-                                if (season == Season.AUTUMN && Random.nextDouble() < 0.05) {
+                                if (season == Season.AUTUMN && Random.nextDouble() < config.autumnFruitDropChance) {
                                     dropRandomFruit(world, entity, bx, by, bz)
                                 }
                             }
@@ -351,7 +359,7 @@ object DynamicForestFeature : Listener {
                 }
             }
         }
-        treeGrowthWorker?.runTaskTimer(plugin, 100L, 10L)
+        treeGrowthWorker?.runTaskTimer(plugin, config.growthTaskDelay, config.growthTaskPeriod)
     }
 
     private fun getStructData(marker: Marker): TreeStructureData? {
@@ -495,28 +503,30 @@ object DynamicForestFeature : Listener {
 
     private fun spawnGrassAroundTree(baseBlock: Block) {
         Bukkit.getScheduler().runTaskLater(plugin, Runnable {
+            if (!config.enabled) return@Runnable
             if (!baseBlock.chunk.isLoaded) return@Runnable
+
             val world = baseBlock.world
             for (dx in -3..3) {
                 for (dz in -3..3) {
-                    if (dx * dx + dz * dz <= 9 && Random.nextDouble() < 0.6) {
+                    if (dx * dx + dz * dz <= 9 && Random.nextDouble() < config.grassSpawnChance) {
                         val targetBlock = world.getHighestBlockAt(baseBlock.x + dx, baseBlock.z + dz)
                         if (Math.abs(targetBlock.y - baseBlock.y) > 3) continue
 
                         val below = targetBlock.getRelative(BlockFace.DOWN)
                         if (below.type in SOIL_BLOCKS) {
                             if (targetBlock.type.isAir) {
-                                targetBlock.setType(if (Random.nextDouble() < 0.1) Material.TALL_GRASS else Material.SHORT_GRASS, false)
+                                targetBlock.setType(if (Random.nextDouble() < config.tallGrassChance) Material.TALL_GRASS else Material.SHORT_GRASS, false)
                             }
                         }
                     }
                 }
             }
-        }, 40L)
+        }, config.grassSpawnDelayTicks)
     }
 
-    private fun spawnDynamicTreeBase(baseBlock: Block, blueprintId: String) {
-        val blueprint = blueprints[blueprintId] ?: return
+    private fun spawnDynamicTreeBase(baseBlock: Block, blueprintId: String): Marker? {
+        val blueprint = blueprints[blueprintId] ?: return null
         baseBlock.setType(Material.getMaterial(blueprint.baseMaterial) ?: Material.OAK_FENCE, false)
         setupBlockData(baseBlock)
 
@@ -539,6 +549,8 @@ object DynamicForestFeature : Listener {
         pdc.set(PROG_KEY, PersistentDataType.INTEGER, 0)
 
         spawnGrassAroundTree(baseBlock)
+
+        return marker
     }
 
     private fun generateTreeStructure(blueprint: TreeBlueprint): TreeStructureData {
@@ -1114,6 +1126,7 @@ object DynamicForestFeature : Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     fun onFruitBreak(event: BlockBreakEvent) {
+        if (!config.enabled) return
         val block = event.block
         if (block.type == Material.PLAYER_HEAD || block.type == Material.PLAYER_WALL_HEAD) {
             val state = block.state as? org.bukkit.block.Skull ?: return
@@ -1133,6 +1146,7 @@ object DynamicForestFeature : Listener {
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     fun onFruitInteract(event: PlayerInteractEvent) {
+        if (!config.enabled) return
         if (event.action != Action.RIGHT_CLICK_BLOCK) return
         val block = event.clickedBlock ?: return
         if (block.type == Material.PLAYER_HEAD || block.type == Material.PLAYER_WALL_HEAD) {
@@ -1152,6 +1166,7 @@ object DynamicForestFeature : Listener {
     }
 
     private fun queueChunkForProcessing(chunk: org.bukkit.Chunk) {
+        if (!config.enabled) return
         if (chunk.world.name !in plugin.gameplayManager.allowedWorlds) return
 
         val pdc = chunk.persistentDataContainer
@@ -1163,8 +1178,8 @@ object DynamicForestFeature : Listener {
         val cz = chunk.z
 
         Bukkit.getScheduler().runTaskLater(plugin, Runnable {
-            chunkScanQueue.add(ChunkLocation(worldName, cx, cz))
-        }, 60L)
+            if (config.enabled) chunkScanQueue.add(ChunkLocation(worldName, cx, cz))
+        }, config.chunkScanDelayTicks)
     }
 
     @EventHandler
@@ -1203,6 +1218,7 @@ object DynamicForestFeature : Listener {
 
     private fun scanChunkAsync(worldName: String, snapshot: ChunkSnapshot) {
         Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
+            if (!config.enabled) return@Runnable
             val chunkX = snapshot.x
             val chunkZ = snapshot.z
             val trees = mutableListOf<TreeData>()
@@ -1313,6 +1329,7 @@ object DynamicForestFeature : Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     fun onSaplingGrow(event: StructureGrowEvent) {
+        if (!config.enabled) return
         event.isCancelled = true
         val blueprintId = when (event.species) {
             TreeType.BIRCH, TreeType.TALL_BIRCH -> "birch"
@@ -1322,11 +1339,17 @@ object DynamicForestFeature : Listener {
             TreeType.DARK_OAK -> "dark_oak"
             else -> "oak"
         }
-        spawnDynamicTreeBase(event.location.block, blueprintId)
+
+        val marker = spawnDynamicTreeBase(event.location.block, blueprintId)
+
+        if (config.instantTrees && marker != null) {
+            fastForwardTree(marker, 1.0)
+        }
     }
 
     @EventHandler
     fun onBoneMealInteract(event: PlayerInteractEvent) {
+        if (!config.enabled) return
         if (event.action != Action.RIGHT_CLICK_BLOCK || event.item?.type != Material.BONE_MEAL) return
         val block = event.clickedBlock ?: return
         if (!(block.type.name.contains("LOG") || block.type.name.contains("WOOD") || block.type.name.contains("FENCE") || block.type.name.contains("WALL") || block.type.name.contains("LEAVES") || block.type.name.contains("TRAPDOOR"))) return
@@ -1345,7 +1368,7 @@ object DynamicForestFeature : Listener {
         val by = pdc.get(TREE_BASE_Y, PersistentDataType.INTEGER) ?: marker.location.blockY
         val bz = pdc.get(TREE_BASE_Z, PersistentDataType.INTEGER) ?: marker.location.blockZ
 
-        processTreeGrowth(marker, TreeStage.valueOf(stageStr), plugin.seasonManager.currentSeason, bx, by, bz, 15)
+        processTreeGrowth(marker, TreeStage.valueOf(stageStr), plugin.seasonManager.currentSeason, bx, by, bz, config.boneMealGrowthSteps)
     }
 
     fun stop() {
@@ -1353,5 +1376,9 @@ object DynamicForestFeature : Listener {
         masterWorker = null
         treeGrowthWorker?.cancel()
         treeGrowthWorker = null
+
+        // Optional: clear queues on reload so disabled state doesn't keep phantom tasks in memory
+        chunkScanQueue.clear()
+        chunkTaskQueue.clear()
     }
 }

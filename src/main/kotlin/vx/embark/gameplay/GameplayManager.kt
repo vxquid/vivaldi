@@ -21,11 +21,20 @@ class GameplayManager(val plugin: Wilderness) : Listener {
     val allowedWorlds: Set<String> = config.worlds.allowedWorlds.toSet()
 
     fun registerFeatures() {
-        this.registerFeature(PlantGrowthFeature,
-            SeasonalChunkSyncFeature, SeasonalMeltingFeature, SeasonalDaylightFeature, SeasonalWeatherFeature,
-            SnowAccumulationFeature, WaterFreezingFeature, DynamicForestFeature
-        )
-        featureListeners.forEach { plugin.server.pluginManager.registerEvents(it, plugin) }
+
+        // Enable features only if user enabled the main functional of the plugin.
+        if (config.general.enableWorldModifications) {
+            this.registerFeature(PlantGrowthFeature,
+                SeasonalChunkSyncFeature, SeasonalMeltingFeature, SeasonalDaylightFeature, SeasonalWeatherFeature,
+                SnowAccumulationFeature, WaterFreezingFeature, DynamicForestFeature
+            )
+            featureListeners.forEach { plugin.server.pluginManager.registerEvents(it, plugin) }
+        }
+
+        else {
+            plugin.logger.warning("WARNING! This plugin currently only makes visual changes. To enable core gameplay mechanics (grass growth, complete tree overhaul, river freezing and snow in winter, etc.), go to /plugins/wilderness/gameplay.yml and enable \"enableWorldModifications.\"")
+        }
+
     }
 
     fun registerFeature(vararg listeners: Listener) {
