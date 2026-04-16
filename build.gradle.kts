@@ -8,13 +8,13 @@ plugins {
     id("com.gradleup.shadow") version "9.2.2"
 }
 
-group = "vivaldi"
+group = "embark"
 version = "1.0.4"
 description = "Embark into unexplored and wild world of nature."
 
 bukkitPluginYaml {
-    name = "vivaldi"
-    main = "vx.vivaldi.Vivaldi"
+    name = "wilderness"
+    main = "vx.embark.Wilderness"
     load = BukkitPluginYaml.PluginLoadOrder.STARTUP
     depend = listOf("packetevents")
     authors.add("vxquid")
@@ -55,14 +55,14 @@ tasks {
 
     tasks {
         shadowJar {
-            archiveFileName = "vivaldi-${version}.jar"
+            archiveFileName = "embark-${version}.jar"
             minimize()
-            relocate("co.aikar.commands", "vx.vivaldi.command")
-            relocate("co.aikar.locales", "vx.vivaldi.command.locales")
-            relocate("kotlin", "vx.vivaldi.kotlin")
-            relocate("com.github.retrooper.packetevents", "vx.vivaldi.packetevents.api")
-            relocate("io.github.retrooper.packetevents", "vx.vivaldi.packetevents.impl")
-            relocate("com.cryptomorin.xseries", "vx.vivaldi.utils")
+            relocate("co.aikar.commands", "vx.embark.command")
+            relocate("co.aikar.locales", "vx.embark.command.locales")
+            relocate("kotlin", "vx.embark.kotlin")
+            relocate("com.github.retrooper.packetevents", "vx.embark.packetevents.api")
+            relocate("io.github.retrooper.packetevents", "vx.embark.packetevents.impl")
+            relocate("com.cryptomorin.xseries", "vx.embark.utils")
         }
     }
 
