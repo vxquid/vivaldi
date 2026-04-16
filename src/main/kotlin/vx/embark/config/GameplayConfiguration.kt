@@ -91,6 +91,8 @@ class GameplayConfiguration {
         var excludedBiomes: List<String> = listOf(
             "*ocean*",
             "*cave*",
+            "*frozen*",
+            "*snow*",
             "*underground*",
             "*volcanic*",
             "*hot_spring*",

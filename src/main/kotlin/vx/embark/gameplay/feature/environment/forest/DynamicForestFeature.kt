@@ -25,6 +25,7 @@ import org.bukkit.event.block.BlockBreakEvent
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.world.ChunkLoadEvent
 import org.bukkit.event.world.ChunkPopulateEvent
+import org.bukkit.event.world.ChunkUnloadEvent
 import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
@@ -40,6 +41,7 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.random.Random
 
 object DynamicForestFeature : Listener {
@@ -68,7 +70,6 @@ object DynamicForestFeature : Listener {
         Material.STONE, Material.ANDESITE, Material.DIORITE, Material.GRANITE, Material.DEEPSLATE, Material.TUFF, Material.SNOW_BLOCK, Material.SNOW
     )
 
-    // WORKER QUEUES
     data class ChunkLocation(val world: String, val x: Int, val z: Int)
     data class TreeData(val x: Int, val y: Int, val z: Int, val logMat: Material, val bpId: String)
     data class PendingChunkTask(val world: String, val trees: List<TreeData>) {
@@ -82,17 +83,48 @@ object DynamicForestFeature : Listener {
     private var masterWorker: BukkitRunnable? = null
     private var treeGrowthWorker: BukkitRunnable? = null
 
-    // MEMORY-BASED PREFAB SCHEMATICS
     private val treePool = ConcurrentHashMap<String, List<TreeStructureData>>()
     private val skullProfileCache = ConcurrentHashMap<String, PlayerProfile>()
 
-    // CONFIG GETTER
     private val config: GameplayConfiguration.DynamicForestConfig
         get() = plugin.gameplayManager.config.dynamicForest
 
+    data class CanopyData(val bpId: String, val cx: Int, val minY: Int, val maxY: Int, val cz: Int, val radiusSq: Int) {
+        fun contains(x: Int, y: Int, z: Int): Boolean {
+            if (y !in minY..maxY) return false
+            val dx = x - cx
+            val dz = z - cz
+            return (dx * dx + dz * dz) <= radiusSq
+        }
+    }
+
+    val canopyCache = ConcurrentHashMap<Long, CopyOnWriteArrayList<CanopyData>>()
+
+    fun getChunkKey(worldName: String, x: Int, z: Int): Long {
+        return (worldName.hashCode().toLong() shl 32) or ((x.toLong() and 0xFFFF) shl 16) or (z.toLong() and 0xFFFF)
+    }
+
+    private fun addCanopy(worldName: String, bpId: String, baseX: Int, baseY: Int, baseZ: Int, height: Int, radius: Int, startHeightPercent: Double) {
+        val minY = baseY + (height * startHeightPercent).toInt() - 1
+        val maxY = baseY + height + 3
+        val radiusSq = (radius + 1) * (radius + 1)
+        val canopy = CanopyData(bpId, baseX, minY, maxY, baseZ, radiusSq)
+
+        val minCX = (baseX - radius - 1) shr 4
+        val maxCX = (baseX + radius + 1) shr 4
+        val minCZ = (baseZ - radius - 1) shr 4
+        val maxCZ = (baseZ + radius + 1) shr 4
+
+        for (cx in minCX..maxCX) {
+            for (cz in minCZ..maxCZ) {
+                val key = getChunkKey(worldName, cx, cz)
+                canopyCache.computeIfAbsent(key) { CopyOnWriteArrayList() }.add(canopy)
+            }
+        }
+    }
+
     enum class TreeStage { GROWING, THICKENING, EXPANDING, HARDENING, MATURE }
 
-    // Lightweight byte-based block data to minimize RAM footprint
     class PrecomputedBlock(val dx: Byte, val dy: Byte, val dz: Byte, val mat: Material, val ext: String? = null)
 
     private fun packCoord(dx: Int, dy: Int, dz: Int): Int {
@@ -105,7 +137,7 @@ object DynamicForestFeature : Listener {
         val thickenPhase: List<PrecomputedBlock>,
         val expandPhase: List<PrecomputedBlock>,
         val hardenPhase: List<PrecomputedBlock>,
-        val occupiedSpace: Set<Int> // O(1) lookup for bone-meal and logic
+        val occupiedSpace: Set<Int>
     )
 
     data class Range(val min: Int, val max: Int) { fun random() = Random.nextInt(min, max + 1) }
@@ -113,7 +145,7 @@ object DynamicForestFeature : Listener {
     data class TrunkRule(val thickChance: Double = 0.0, val bottomMaterial: String, val bottomMaxHeight: Int, val middleMaterial: String, val middleHeightPercent: Double, val topMaterial: String, val bendChance: Double = 0.15, val stairsMaterial: String, val decorations: DecorationRule? = DecorationRule())
     data class RootRule(val material: String, val chance: Double, val maxDepth: Int)
     data class BranchRule(val count: Range, val length: Range, val startHeightPercent: Double, val knotChance: Double, val bareChance: Double? = 0.0, val bareMaterial: String? = null, val curveUpChance: Double? = 0.8, val curveDownChance: Double? = 0.0, val thickBaseLength: Int? = 1)
-    data class LeafRule(val materials: List<String>, val radius: Int, val density: Double, val startHeightPercent: Double, val shapeFocusY: Double, val shape: String = "OVAL", val vinesChance: Double = 0.0)
+    data class LeafRule(val materials: List<String>, val radius: Int, val density: Double, val startHeightPercent: Double, val shapeFocusY: Double, val shape: String = "OVAL", val vinesChance: Double = 0.0, val seasonalColors: Map<String, String>? = null)
     data class FruitRule(val base64: String, val dropMaterial: String, val spawnChance: Double, val dropChance: Double, val attachTo: String = "LEAVES")
 
     data class TreeBlueprint(val baseMaterial: String, val height: Range, val maxStairs: Range = Range(0, 3), val trunk: TrunkRule, val roots: RootRule? = null, val branches: BranchRule, val leaves: LeafRule, val fruits: List<FruitRule> = emptyList()) {
@@ -123,11 +155,10 @@ object DynamicForestFeature : Listener {
         fun getDecorations(): DecorationRule = trunk.decorations ?: DecorationRule(0.0, 0.0)
     }
 
-    private val blueprints = mutableMapOf<String, TreeBlueprint>()
+    val blueprints = mutableMapOf<String, TreeBlueprint>()
     private val fruitMap = mutableMapOf<String, FruitRule>()
 
     init {
-        // Init happens eagerly, but we only load if enabled
         if (config.enabled) {
             loadBlueprints()
             start()
@@ -152,7 +183,7 @@ object DynamicForestFeature : Listener {
                 TrunkRule(0.0, "BIRCH_WOOD", 2, "DIORITE_WALL", 0.4, "PALE_OAK_FENCE", 0.02, "ANDESITE_STAIRS", DecorationRule(0.02, 0.01)),
                 RootRule("BIRCH_WOOD", 0.3, 3),
                 BranchRule(Range(2, 5), Range(1, 3), 0.45, 0.08, 0.0, "BIRCH", 0.9, 0.0, 1),
-                LeafRule(listOf("BIRCH_LEAVES", "OAK_LEAVES"), 3, 0.65, 0.4, 0.8, "OVAL", 0.0))
+                LeafRule(listOf("OAK_LEAVES"), 3, 0.55, 0.4, 0.8, "OVAL", 0.0, mapOf("autumn" to "#eab308")))
 
             val appleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvMTdlYTI3OGQ2MjI1YzQ0N2M1OTQzZDY1Mjc5OGQwYmJiZDE0MTg0MzRjZThjNTRjNTRmZGFjNzk5OTRkZGQ2YyJ9fX0="
             val goldenAppleBase64 = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZTkyZWFhY2QyOTBlYWQzN2ViMWEyMDJhYzczNjdmMzJiZTc0Y2Y0YWM3NzIzZTA2N2M0NjU4YmY2MmMzZGJkNiJ9fX0="
@@ -162,7 +193,7 @@ object DynamicForestFeature : Listener {
                 TrunkRule(0.05, "OAK_WOOD", 3, "MUD_BRICK_WALL", 0.45, "SPRUCE_FENCE", 0.15, "SPRUCE_STAIRS", DecorationRule(0.05, 0.04)),
                 RootRule("OAK_WOOD", 0.5, 4),
                 BranchRule(Range(4, 7), Range(2, 4), 0.35, 0.15, 0.15, "SPRUCE", 0.6, 0.1, 1),
-                LeafRule(listOf("OAK_LEAVES"), 4, 0.75, 0.35, 0.0, "OVAL", 0.0), listOf(
+                LeafRule(listOf("OAK_LEAVES"), 4, 0.60, 0.35, 0.0, "OVAL", 0.0), listOf(
                     FruitRule(appleBase64, "APPLE", 0.015, 0.6, "LEAVES"), FruitRule(goldenAppleBase64, "GOLDEN_APPLE", 0.001, 1.0, "LEAVES")
                 ))
 
@@ -170,19 +201,19 @@ object DynamicForestFeature : Listener {
                 TrunkRule(0.15, "SPRUCE_WOOD", 3, "NETHER_BRICK_WALL", 0.5, "DARK_OAK_FENCE", 0.05, "SPRUCE_STAIRS", DecorationRule(0.03, 0.08)),
                 RootRule("SPRUCE_WOOD", 0.4, 3),
                 BranchRule(Range(3, 6), Range(1, 2), 0.35, 0.1, 0.0, "DARK_OAK", 0.2, 0.4, 1),
-                LeafRule(listOf("SPRUCE_LEAVES"), 4, 0.9, 0.3, 0.0, "CONE", 0.0))
+                LeafRule(listOf("OAK_LEAVES"), 4, 0.75, 0.3, 0.0, "CONE", 0.0, mapOf("spring" to "#3b593b", "summer" to "#3b593b", "autumn" to "#3b593b", "winter" to "#537053")))
 
             val defaultAcacia = TreeBlueprint("ACACIA_FENCE", Range(17, 24), Range(0, 2),
                 TrunkRule(0.0, "ACACIA_WOOD", 2, "TUFF_WALL", 0.55, "ACACIA_FENCE", 0.25, "TUFF_STAIRS", DecorationRule(0.01, 0.02)),
                 RootRule("ACACIA_WOOD", 0.2, 2),
                 BranchRule(Range(3, 6), Range(3, 5), 0.4, 0.15, 0.0, "ACACIA", 0.3, 0.0, 2),
-                LeafRule(listOf("ACACIA_LEAVES"), 4, 0.8, 0.6, 0.0, "FLAT", 0.0))
+                LeafRule(listOf("OAK_LEAVES"), 4, 0.65, 0.6, 0.0, "FLAT", 0.0))
 
             val defaultJungle = TreeBlueprint("JUNGLE_FENCE", Range(20, 32), Range(0, 0),
                 TrunkRule(0.4, "JUNGLE_WOOD", 6, "JUNGLE_LOG", 0.6, "JUNGLE_FENCE", 0.05, "JUNGLE_STAIRS", DecorationRule(0.06, 0.03)),
                 RootRule("JUNGLE_WOOD", 0.7, 4),
                 BranchRule(Range(4, 7), Range(3, 6), 0.5, 0.1, 0.2, "JUNGLE", 0.7, 0.2, 2),
-                LeafRule(listOf("JUNGLE_LEAVES"), 4, 0.55, 0.55, 0.2, "OVAL", 0.15), listOf(
+                LeafRule(listOf("JUNGLE_LEAVES"), 4, 0.45, 0.55, 0.2, "OVAL", 0.15), listOf(
                     FruitRule(cocoaBase64, "COCOA_BEANS", 0.08, 0.8, "TRUNK")
                 ))
 
@@ -190,7 +221,13 @@ object DynamicForestFeature : Listener {
                 TrunkRule(0.3, "DARK_OAK_WOOD", 4, "DARK_OAK_LOG", 0.5, "DARK_OAK_FENCE", 0.1, "DARK_OAK_STAIRS", DecorationRule(0.05, 0.05)),
                 RootRule("DARK_OAK_WOOD", 0.6, 4),
                 BranchRule(Range(4, 8), Range(3, 5), 0.4, 0.1, 0.15, "DARK_OAK", 0.5, 0.1, 1),
-                LeafRule(listOf("DARK_OAK_LEAVES"), 4, 0.65, 0.4, 0.4, "OVAL", 0.0))
+                LeafRule(listOf("OAK_LEAVES"), 3, 0.55, 0.4, 0.4, "OVAL", 0.0))
+
+            val defaultCherry = TreeBlueprint("CHERRY_FENCE", Range(15, 20), Range(0, 2),
+                TrunkRule(0.0, "CHERRY_WOOD", 2, "NETHER_BRICK_WALL", 0.4, "CHERRY_FENCE", 0.1, "CHERRY_STAIRS", DecorationRule(0.0, 0.0)),
+                RootRule("CHERRY_WOOD", 0.2, 2),
+                BranchRule(Range(3, 5), Range(2, 4), 0.4, 0.1, 0.0, "CHERRY", 0.5, 0.1, 1),
+                LeafRule(listOf("OAK_LEAVES"), 4, 0.65, 0.4, 0.0, "FLAT", 0.0, mapOf("spring" to "#ffb7c5", "summer" to "#76b057", "autumn" to "#d46a43")))
 
             File(blueprintsDir, "birch.json").writeText(gson.toJson(defaultBirch))
             File(blueprintsDir, "oak.json").writeText(gson.toJson(defaultOak))
@@ -198,6 +235,7 @@ object DynamicForestFeature : Listener {
             File(blueprintsDir, "acacia.json").writeText(gson.toJson(defaultAcacia))
             File(blueprintsDir, "jungle.json").writeText(gson.toJson(defaultJungle))
             File(blueprintsDir, "dark_oak.json").writeText(gson.toJson(defaultDarkOak))
+            File(blueprintsDir, "cherry.json").writeText(gson.toJson(defaultCherry))
         }
 
         blueprints.clear()
@@ -212,7 +250,6 @@ object DynamicForestFeature : Listener {
                     val urlStr = getUrlFromBase64(fruit.base64)
                     if (urlStr != null) {
                         fruitMap[urlStr] = fruit
-                        // Caching PlayerProfile on startup to avoid huge runtime lag
                         try {
                             val profile = Bukkit.createPlayerProfile(UUID.randomUUID())
                             val textures = profile.textures
@@ -228,7 +265,7 @@ object DynamicForestFeature : Listener {
     }
 
     private fun start() {
-        stop() // Ensure clean start if reloaded
+        stop()
         if (!config.enabled) return
 
         val pregenAmount = config.treePoolSize
@@ -402,7 +439,6 @@ object DynamicForestFeature : Listener {
 
             val dx = block.x - bx; val dy = block.y - by; val dz = block.z - bz
 
-            // O(1) RAM Lookup instead of slow String parsing!
             val packed = packCoord(dx, dy, dz)
             val struct = getStructData(marker)
             struct?.occupiedSpace?.contains(packed) == true
@@ -538,7 +574,6 @@ object DynamicForestFeature : Listener {
         val varIdx = if (pool != null && pool.isNotEmpty()) Random.nextInt(pool.size) else 0
         val structure = pool?.getOrNull(varIdx) ?: generateTreeStructure(blueprint)
 
-        // Stripped NBT overhead to practically zero
         pdc.set(TREE_STAGE_KEY, PersistentDataType.STRING, TreeStage.GROWING.name)
         pdc.set(TREE_BP_ID_KEY, PersistentDataType.STRING, blueprintId)
         pdc.set(TREE_VAR_IDX_KEY, PersistentDataType.INTEGER, varIdx)
@@ -547,6 +582,8 @@ object DynamicForestFeature : Listener {
         pdc.set(TREE_BASE_Z, PersistentDataType.INTEGER, baseBlock.z)
         pdc.set(TREE_HEIGHT_KEY, PersistentDataType.INTEGER, structure.height)
         pdc.set(PROG_KEY, PersistentDataType.INTEGER, 0)
+
+        addCanopy(marker.world.name, blueprintId, baseBlock.x, baseBlock.y, baseBlock.z, structure.height, blueprint.leaves.radius, blueprint.leaves.startHeightPercent)
 
         spawnGrassAroundTree(baseBlock)
 
@@ -1002,7 +1039,6 @@ object DynamicForestFeature : Listener {
         sortedGrowPhase.sortBy { it.first }
         growPhase.addAll(sortedGrowPhase.map { it.second })
 
-        // Precompute packed occupation set for O(1) marker lookup later
         val totalBlocks = growPhase + thickenPhase + expandPhase + hardenPhase
         totalBlocks.forEach { occupiedSpace.add(packCoord(it.dx.toInt(), it.dy.toInt(), it.dz.toInt())) }
 
@@ -1190,6 +1226,30 @@ object DynamicForestFeature : Listener {
     @EventHandler
     fun onChunkLoad(event: ChunkLoadEvent) {
         queueChunkForProcessing(event.chunk)
+
+        if (config.enabled) {
+            for (entity in event.chunk.entities) {
+                if (entity is Marker && entity.persistentDataContainer.has(TREE_STAGE_KEY, PersistentDataType.STRING)) {
+                    val pdc = entity.persistentDataContainer
+                    val bpId = pdc.get(TREE_BP_ID_KEY, PersistentDataType.STRING) ?: continue
+                    val bx = pdc.get(TREE_BASE_X, PersistentDataType.INTEGER) ?: continue
+                    val by = pdc.get(TREE_BASE_Y, PersistentDataType.INTEGER) ?: continue
+                    val bz = pdc.get(TREE_BASE_Z, PersistentDataType.INTEGER) ?: continue
+                    val h = pdc.get(TREE_HEIGHT_KEY, PersistentDataType.INTEGER) ?: continue
+
+                    val bp = blueprints[bpId] ?: continue
+                    if (!bp.leaves.seasonalColors.isNullOrEmpty()) {
+                        addCanopy(entity.world.name, bpId, bx, by, bz, h, bp.leaves.radius, bp.leaves.startHeightPercent)
+                    }
+                }
+            }
+        }
+    }
+
+    @EventHandler
+    fun onChunkUnload(event: ChunkUnloadEvent) {
+        val key = getChunkKey(event.chunk.world.name, event.chunk.x, event.chunk.z)
+        canopyCache.remove(key)
     }
 
     private fun getBlueprintIdFor(type: Material): String? {
@@ -1200,6 +1260,7 @@ object DynamicForestFeature : Listener {
             Material.ACACIA_LOG, Material.ACACIA_WOOD -> "acacia"
             Material.JUNGLE_LOG, Material.JUNGLE_WOOD -> "jungle"
             Material.DARK_OAK_LOG, Material.DARK_OAK_WOOD -> "dark_oak"
+            Material.CHERRY_LOG, Material.CHERRY_WOOD -> "cherry"
             else -> null
         }
     }
@@ -1212,6 +1273,7 @@ object DynamicForestFeature : Listener {
             Material.ACACIA_LOG, Material.ACACIA_WOOD -> listOf(Material.ACACIA_LEAVES)
             Material.JUNGLE_LOG, Material.JUNGLE_WOOD -> listOf(Material.JUNGLE_LEAVES)
             Material.DARK_OAK_LOG, Material.DARK_OAK_WOOD -> listOf(Material.DARK_OAK_LEAVES)
+            Material.CHERRY_LOG, Material.CHERRY_WOOD -> listOf(Material.CHERRY_LEAVES)
             else -> emptyList()
         }
     }
@@ -1227,7 +1289,7 @@ object DynamicForestFeature : Listener {
                 for (z in 0..15) {
                     var topY = snapshot.getHighestBlockYAt(x, z)
 
-                    while (topY > 60) { // Optimize: dont scan to y=0
+                    while (topY > 60) {
                         val t = snapshot.getBlockType(x, topY, z)
                         if (!t.isAir && t != Material.SNOW && t != Material.VINE) break
                         topY--
@@ -1293,7 +1355,6 @@ object DynamicForestFeature : Listener {
             count++
 
             for (face in ALL_FACES) {
-                // Prevent cascading generation out of bounds
                 val relX = b.x + face.modX
                 val relZ = b.z + face.modZ
                 if (relX shr 4 != start.x shl 4 || relZ shr 4 != start.z shl 4) {
@@ -1337,6 +1398,7 @@ object DynamicForestFeature : Listener {
             TreeType.ACACIA -> "acacia"
             TreeType.JUNGLE, TreeType.SMALL_JUNGLE -> "jungle"
             TreeType.DARK_OAK -> "dark_oak"
+            TreeType.CHERRY -> "cherry"
             else -> "oak"
         }
 
@@ -1377,8 +1439,8 @@ object DynamicForestFeature : Listener {
         treeGrowthWorker?.cancel()
         treeGrowthWorker = null
 
-        // Optional: clear queues on reload so disabled state doesn't keep phantom tasks in memory
         chunkScanQueue.clear()
         chunkTaskQueue.clear()
+        canopyCache.clear()
     }
 }

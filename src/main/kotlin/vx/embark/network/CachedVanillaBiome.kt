@@ -12,7 +12,9 @@ import com.github.retrooper.packetevents.resources.ResourceLocation
 import com.github.retrooper.packetevents.wrapper.configuration.server.WrapperConfigServerRegistryData
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData
 import io.github.retrooper.packetevents.util.SpigotConversionUtil
+import org.bukkit.entity.Player
 import vx.embark.Wilderness.Companion.plugin
+import vx.embark.gameplay.feature.environment.forest.DynamicForestFeature
 import vx.embark.season.Season
 import vx.embark.season.biome.BiomeColorPalette
 import java.lang.reflect.Field
@@ -46,15 +48,20 @@ object BiomeRegistryInterceptor : PacketListener {
 
     val vanillaBiomesCache = ConcurrentHashMap<String, CachedVanillaBiome>()
 
-    // Maps: [Vanilla Biome Network ID] ->[Season -> Seasonal Normal Biome Network ID]
+    // Maps: [Vanilla Biome Network ID] -> [Season] -> [Seasonal Normal Biome Network ID]
     private val vanillaToSeasonalNormalMap = ConcurrentHashMap<Int, Map<Season, Int>>()
 
-    // Maps: [Seasonal Normal Biome Network ID] ->[Seasonal Alternate Biome Network ID]
-    // Alternate biomes are used specifically under forest leaves to create a "shadow" or varied depth effect.
+    // Maps: [Seasonal Normal Biome Network ID] -> [Seasonal Alternate Biome Network ID]
     private val normalToAlternateBiomeMap = ConcurrentHashMap<Int, Int>()
 
-    // Maps:[Hardcoded Leaf BlockState Global ID] -> [Oak Leaf BlockState Global ID]
+    // Maps: [Any Base Biome ID (Normal or Alt)] -> [Blueprint ID] -> [Custom Tree Biome ID]
+    private val treeOverrideBiomeMap = ConcurrentHashMap<Int, Map<String, Int>>()
+
+    // Maps: [Hardcoded Leaf BlockState Global ID] -> [Oak Leaf BlockState Global ID]
     private val leafReplacementMap = ConcurrentHashMap<Int, Int>()
+
+    // Fast lookup to know if a block is a leaf block (used for fast AABB tree checks)
+    private val allLeafGlobalIds = ConcurrentHashMap.newKeySet<Int>()
 
     // Cached reflection fields for fast NBT reading
     private val nbtFloatValueField: Field by lazy {
@@ -66,10 +73,10 @@ object BiomeRegistryInterceptor : PacketListener {
     }
 
     /**
-     * Minecraft hardcodes Birch and Spruce leaves to ignore biome colormaps.
+     * Minecraft hardcodes Birch, Spruce, and Cherry leaves to ignore biome colormaps.
      * To make them change colors during seasons, we generate a map that translates
-     * every possible state of Birch/Spruce leaves (distance, waterlogged, persistent)
-     * into the equivalent state of Oak leaves, which DO respond to biome colors.
+     * every possible state of these leaves into the equivalent state of Oak leaves,
+     * which DO respond to biome colors.
      */
     fun buildLeafMappings() {
         if (leafReplacementMap.isNotEmpty()) return
@@ -77,34 +84,37 @@ object BiomeRegistryInterceptor : PacketListener {
         try {
             val targets = mapOf(
                 org.bukkit.Material.BIRCH_LEAVES to org.bukkit.Material.OAK_LEAVES,
-                org.bukkit.Material.SPRUCE_LEAVES to org.bukkit.Material.OAK_LEAVES
+                org.bukkit.Material.SPRUCE_LEAVES to org.bukkit.Material.OAK_LEAVES,
+                org.bukkit.Material.CHERRY_LEAVES to org.bukkit.Material.OAK_LEAVES
             )
 
-            for ((sourceMat, targetMat) in targets) {
-                for (distance in 1..7) {
-                    for (persistent in listOf(true, false)) {
-                        for (waterlogged in listOf(true, false)) {
-                            // Build Source (e.g. Birch)
-                            val sourceData = org.bukkit.Bukkit.createBlockData(sourceMat) as org.bukkit.block.data.type.Leaves
-                            sourceData.distance = distance
-                            sourceData.isPersistent = persistent
-                            if (sourceData is org.bukkit.block.data.Waterlogged) {
-                                (sourceData as org.bukkit.block.data.Waterlogged).isWaterlogged = waterlogged
+            // Build the all-leaf lookup set first for ALL native leaf types
+            for (mat in org.bukkit.Material.values()) {
+                if (mat.name.endsWith("_LEAVES")) {
+                    for (distance in 1..7) {
+                        for (persistent in listOf(true, false)) {
+                            for (waterlogged in listOf(true, false)) {
+                                val data = org.bukkit.Bukkit.createBlockData(mat) as org.bukkit.block.data.type.Leaves
+                                data.distance = distance
+                                data.isPersistent = persistent
+                                if (data is org.bukkit.block.data.Waterlogged) {
+                                    data.isWaterlogged = waterlogged
+                                }
+                                val id = SpigotConversionUtil.fromBukkitBlockData(data).globalId
+                                allLeafGlobalIds.add(id)
+
+                                // Build replacement target if it's one of the hardcoded ones
+                                if (targets.containsKey(mat)) {
+                                    val targetData = org.bukkit.Bukkit.createBlockData(targets[mat]!!) as org.bukkit.block.data.type.Leaves
+                                    targetData.distance = distance
+                                    targetData.isPersistent = persistent
+                                    if (targetData is org.bukkit.block.data.Waterlogged) {
+                                        targetData.isWaterlogged = waterlogged
+                                    }
+                                    val targetId = SpigotConversionUtil.fromBukkitBlockData(targetData).globalId
+                                    leafReplacementMap[id] = targetId
+                                }
                             }
-
-                            // Build Target (e.g. Oak)
-                            val targetData = org.bukkit.Bukkit.createBlockData(targetMat) as org.bukkit.block.data.type.Leaves
-                            targetData.distance = distance
-                            targetData.isPersistent = persistent
-                            if (targetData is org.bukkit.block.data.Waterlogged) {
-                                (targetData as org.bukkit.block.data.Waterlogged).isWaterlogged = waterlogged
-                            }
-
-                            // Get global protocol IDs and map them
-                            val sourceId = SpigotConversionUtil.fromBukkitBlockData(sourceData).globalId
-                            val targetId = SpigotConversionUtil.fromBukkitBlockData(targetData).globalId
-
-                            leafReplacementMap[sourceId] = targetId
                         }
                     }
                 }
@@ -115,19 +125,13 @@ object BiomeRegistryInterceptor : PacketListener {
         }
     }
 
-    /**
-     * Calculates the dynamically shifted temperature for a biome based on the current season.
-     * This naturally triggers vanilla weather mechanics (like rendering snow instead of rain in winter).
-     * Vanilla snow threshold is < 0.15f.
-     */
     private fun getSeasonalTemperature(baseTemp: Float, season: Season): Float {
         val newTemp = when (season) {
-            Season.SPRING -> baseTemp + 0.05f // Mild, close to default
-            Season.SUMMER -> baseTemp + 0.40f // Hotter (might turn snow into rain in cold biomes)
-            Season.AUTUMN -> baseTemp - 0.20f // Cooler
-            Season.WINTER -> baseTemp - 0.80f // Freezing (causes snow in most temperate biomes)
+            Season.SPRING -> baseTemp + 0.05f
+            Season.SUMMER -> baseTemp + 0.40f
+            Season.AUTUMN -> baseTemp - 0.20f
+            Season.WINTER -> baseTemp - 0.80f
         }
-        // Minecraft usually bounds temperatures between -0.7 and 2.0
         return max(-0.7f, min(2.0f, newTemp))
     }
 
@@ -138,11 +142,6 @@ object BiomeRegistryInterceptor : PacketListener {
         }
     }
 
-    /**
-     * Intercepts the BIOME REGISTRY packet sent when a player joins.
-     * We don't overwrite vanilla biomes; instead, we read them, apply our custom seasonal
-     * color palettes and temperatures, and append them as brand NEW virtual biomes to the registry.
-     */
     private fun handleRegistryData(event: PacketSendEvent) {
         try {
             val wrapper = WrapperConfigServerRegistryData(event)
@@ -155,13 +154,13 @@ object BiomeRegistryInterceptor : PacketListener {
                 var injectedCount = 0
                 val tempVanillaToSeasonal = mutableMapOf<Int, Map<Season, Int>>()
                 val tempNormalToAlternate = mutableMapOf<Int, Int>()
+                val tempTreeOverrides = mutableMapOf<Int, Map<String, Int>>()
 
                 for (i in elements.indices) {
                     val element = elements[i]
                     val biomeKey = element.id.toString()
                     val nbt = element.data as? NBTCompound
 
-                    // Cache vanilla fallback data
                     if (nbt != null && !vanillaBiomesCache.containsKey(biomeKey)) {
                         extractAndCacheBiomeData(biomeKey, nbt)
                     }
@@ -169,46 +168,64 @@ object BiomeRegistryInterceptor : PacketListener {
                     val rawName = (if (biomeKey.contains(":")) biomeKey.split(":")[1] else biomeKey).lowercase()
                     val seasonMap = mutableMapOf<Season, Int>()
 
-                    // Retrieve original baseline temperature
                     val baseTemp = vanillaBiomesCache[biomeKey]?.temperature ?: 0.5f
 
-                    // For every vanilla biome, generate its counterpart for ALL 4 seasons.
                     for (season in Season.entries) {
                         val seasonName = season.name.lowercase()
                         val normalPalette = plugin.seasonalBiomeManager.getActivePaletteFor(biomeKey, season)
                         val altPalette = plugin.seasonalBiomeManager.getAlternatePaletteFor(biomeKey, season)
 
                         if (normalPalette != null && altPalette != null) {
-                            val normalKey = "embark:${seasonName}_$rawName"
-                            val altKey = "embark:${seasonName}_${rawName}_alt"
-
-                            // Dynamically adjust temperature based on the season
                             val seasonalTemp = getSeasonalTemperature(baseTemp, season)
 
-                            // Generate NBT for the Normal Seasonal Biome
+                            val normalKey = "embark:${seasonName}_$rawName"
                             val normalNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
-                            normalNbt.setTag("temperature", NBTFloat(seasonalTemp)) // Inject new temp
+                            normalNbt.setTag("temperature", NBTFloat(seasonalTemp))
                             normalNbt.setTag("has_precipitation", NBTByte(1.toByte()))
-                            val normalEffects = getOrCreateEffects(normalNbt)
-                            injectColors(normalEffects, normalPalette)
+                            injectColors(getOrCreateEffects(normalNbt), normalPalette)
 
-                            // Generate NBT for the Alternate Seasonal Biome (used under leaves)
+                            val altKey = "embark:${seasonName}_${rawName}_alt"
                             val altNbt = if (nbt != null) cloneBiomeNbt(nbt) else createDefaultBiomeNbt()
-                            altNbt.setTag("temperature", NBTFloat(seasonalTemp)) // Inject new temp
+                            altNbt.setTag("temperature", NBTFloat(seasonalTemp))
                             altNbt.setTag("has_precipitation", NBTByte(1.toByte()))
-                            val altEffects = getOrCreateEffects(altNbt)
-                            injectColors(altEffects, altPalette)
+                            injectColors(getOrCreateEffects(altNbt), altPalette)
 
-                            // Append to registry list
                             newElements.add(WrapperConfigServerRegistryData.RegistryElement(ResourceLocation(normalKey), normalNbt))
                             newElements.add(WrapperConfigServerRegistryData.RegistryElement(ResourceLocation(altKey), altNbt))
 
-                            // Calculate new protocol IDs for tracking
                             val normalId = elements.size + newElements.size - 2
                             val altId = elements.size + newElements.size - 1
 
                             seasonMap[season] = normalId
                             tempNormalToAlternate[normalId] = altId
+
+                            // ----------------------------------------------------
+                            // Generate Virtual Biomes for Custom Tree Color Overrides
+                            // ----------------------------------------------------
+                            val bpOverrides = mutableMapOf<String, Int>()
+                            for ((bpId, bp) in DynamicForestFeature.blueprints) {
+                                val overrideColor = bp.leaves.seasonalColors?.get(season.name.lowercase())
+                                if (!overrideColor.isNullOrEmpty()) {
+                                    val treeNbt = cloneBiomeNbt(normalNbt)
+                                    val treeEffects = getOrCreateEffects(treeNbt)
+                                    treeEffects.setTag("foliage_color", NBTInt(parseHexColor(overrideColor)))
+
+                                    val treeKey = "embark:${seasonName}_${rawName}_tree_$bpId"
+                                    newElements.add(WrapperConfigServerRegistryData.RegistryElement(ResourceLocation(treeKey), treeNbt))
+                                    bpOverrides[bpId] = elements.size + newElements.size - 1
+                                    injectedCount++
+                                }
+                            }
+
+                            // Map overrides safely so we can look them up whether the base block is normal, alt, or already an override
+                            if (bpOverrides.isNotEmpty()) {
+                                tempTreeOverrides[normalId] = bpOverrides
+                                tempTreeOverrides[altId] = bpOverrides
+                                for (treeId in bpOverrides.values) {
+                                    tempTreeOverrides[treeId] = bpOverrides
+                                }
+                            }
+
                             injectedCount += 2
                         }
                     }
@@ -218,28 +235,25 @@ object BiomeRegistryInterceptor : PacketListener {
                     }
                 }
 
-                // Push custom biomes to the packet
                 elements.addAll(newElements)
                 wrapper.elements = elements
 
-                // Update lookup maps safely
                 vanillaToSeasonalNormalMap.clear()
                 vanillaToSeasonalNormalMap.putAll(tempVanillaToSeasonal)
 
                 normalToAlternateBiomeMap.clear()
                 normalToAlternateBiomeMap.putAll(tempNormalToAlternate)
 
-                plugin.logger.info("Appended $injectedCount virtual seasonal biomes for ALL seasons.")
+                treeOverrideBiomeMap.clear()
+                treeOverrideBiomeMap.putAll(tempTreeOverrides)
+
+                plugin.logger.info("Appended $injectedCount virtual seasonal biomes for ALL seasons and tree overrides.")
             }
         } catch (e: Exception) {
             plugin.logger.severe("Exception while processing REGISTRY_DATA: ${e.message}")
         }
     }
 
-    /**
-     * Intercepts actual CHUNK packets.
-     * Replaces vanilla biomes with our virtual seasonal biomes, and replaces hardcoded leaves with oak.
-     */
     private fun handleChunkData(event: PacketSendEvent) {
         if (leafReplacementMap.isEmpty()) buildLeafMappings()
         if (vanillaToSeasonalNormalMap.isEmpty()) return
@@ -249,10 +263,16 @@ object BiomeRegistryInterceptor : PacketListener {
             val chunks = wrapper.column.chunks
             var modified = false
 
-            // ==============================================================================
-            // OPTIMIZATION: Fast scan to find the highest section containing non-air blocks.
-            // This prevents us from wasting CPU cycles iterating through completely empty sky.
-            // ==============================================================================
+            val chunkX = wrapper.column.x
+            val chunkZ = wrapper.column.z
+
+            // Grab context details for canopy intersections
+            val player = event.getPlayer<Player>()
+            val worldName = player?.world?.name ?: "world"
+            val minHeight = player?.world?.minHeight ?: -64
+            val chunkKey = DynamicForestFeature.getChunkKey(worldName, chunkX, chunkZ)
+            val canopies = DynamicForestFeature.canopyCache[chunkKey]
+
             var highestSection = -1
             for (i in chunks.indices.reversed()) {
                 val chunk = chunks[i]
@@ -275,15 +295,10 @@ object BiomeRegistryInterceptor : PacketListener {
                 }
             }
 
-            // Unloaded or entirely empty chunk column check
             if (highestSection == -1) return
 
-            // Limit processing vertical bounds.
-            // Bottom: Ignore deep caves (highestSection - 4). Seasons don't exist underground.
-            // Top: Buffer of 2 sections (+32 blocks) above the highest block for sky color transitioning.
             val bottomSection = max(0, highestSection - 4)
             val topSection = min(chunks.lastIndex, highestSection + 2)
-
             val currentSeason = plugin.seasonManager.currentSeason
 
             for (i in bottomSection..topSection) {
@@ -293,18 +308,7 @@ object BiomeRegistryInterceptor : PacketListener {
                     val biomeData = chunk.biomeData
                     var sectionModified = false
 
-                    // ==============================================================================
-                    // THE CRASH PREVENTION SAFEGUARD (The 8-Biome Limit)
-                    // Vanilla Minecraft 1.18+ strictly limits 'indirect' biome palettes to a maximum
-                    // of 8 unique biomes per 16x16x16 section. If a section has >8 biomes, it MUST
-                    // use a Global Palette.
-                    // PacketEvents has a bug: modifying a palette dynamically beyond 8 entries causes
-                    // it to write an invalid buffer size. The client tries to read past the buffer length
-                    // and gets kicked with 'readerIndex exceeds writerIndex' or 'IndexOutOfBoundsException'.
-                    //
-                    // FIX: We gather all existing unique biomes first. We then only allow adding
-                    // NEW seasonal biomes if doing so won't push the total unique count past 8.
-                    // ==============================================================================
+                    // Gather unique biomes safely for 8-biome limit check
                     val currentUniqueBiomes = mutableSetOf<Int>()
                     for (bx in 0..3) {
                         for (by in 0..3) {
@@ -314,14 +318,10 @@ object BiomeRegistryInterceptor : PacketListener {
                         }
                     }
 
-                    // If vanilla generation already gave us >8 biomes, it's natively using a Global Palette.
-                    // Global palettes don't suffer from this bug, so we are completely safe to add as many as we want.
                     val isGlobal = currentUniqueBiomes.size > 8
-
-                    // Track biomes we actively inject so we can accurately check against the limit
                     val addedBiomes = mutableSetOf<Int>()
 
-                    // PASS 1: Biomes
+                    // PASS 1: Base Seasonal Biomes
                     for (bx in 0..3) {
                         for (by in 0..3) {
                             for (bz in 0..3) {
@@ -334,8 +334,6 @@ object BiomeRegistryInterceptor : PacketListener {
                                         addedBiomes.add(normalId)
                                         sectionModified = true
                                     } else {
-                                        // LIMIT EXCEEDED!
-                                        // Instead of leaving a green vanilla biome, we take ANY already added seasonal biome:
                                         val safeFallback = addedBiomes.firstOrNull()
                                         if (safeFallback != null) {
                                             biomeData.set(bx, by, bz, safeFallback)
@@ -347,42 +345,50 @@ object BiomeRegistryInterceptor : PacketListener {
                         }
                     }
 
-                    // -------------------------------------------------------------------------
-                    // PASS 2: Block Sweep & Shadow Biomes
-                    // Scans the 16x16x16 block volume. Replaces non-tintable leaves with Oak.
-                    // Additionally, injects an 'Alternate' darker biome directly at the leaf's
-                    // coordinate to create shadow and depth.
-                    // -------------------------------------------------------------------------
+                    // PASS 2: Block Sweep, Leaf Replacements & Shadow/Tree Overrides
                     for (bx in 0..15) {
                         for (by in 0..15) {
                             for (bz in 0..15) {
                                 val currentStateId = chunk.get(bx, by, bz)
-
-                                // Native fast-skip for air blocks
                                 if (currentStateId.globalId == 0) continue
 
                                 val replacementStateId = leafReplacementMap[currentStateId.globalId]
+                                val isLeaf = replacementStateId != null || allLeafGlobalIds.contains(currentStateId.globalId)
 
-                                if (replacementStateId != null) {
-                                    // Replace Birch/Spruce with Oak
-                                    chunk.set(bx, by, bz, replacementStateId)
-                                    sectionModified = true
+                                if (isLeaf) {
+                                    if (replacementStateId != null) {
+                                        chunk.set(bx, by, bz, replacementStateId)
+                                        sectionModified = true
+                                    }
 
-                                    // Calculate biome coordinate (biomes are 4x4x4 blocks)
                                     val biomeX = bx / 4
                                     val biomeY = by / 4
                                     val biomeZ = bz / 4
 
                                     val currentBiomeId = biomeData.get(biomeX, biomeY, biomeZ)
-                                    val altBiomeId = normalToAlternateBiomeMap[currentBiomeId]
+                                    var targetBiomeId = normalToAlternateBiomeMap[currentBiomeId]
 
-                                    if (altBiomeId != null && currentBiomeId != altBiomeId) {
-                                        if (isGlobal || currentUniqueBiomes.contains(altBiomeId) || addedBiomes.contains(altBiomeId) || (currentUniqueBiomes.size + addedBiomes.size < 7)) {
-                                            biomeData.set(biomeX, biomeY, biomeZ, altBiomeId)
-                                            addedBiomes.add(altBiomeId)
+                                    // Custom Tree Override Check
+                                    if (canopies != null && canopies.isNotEmpty()) {
+                                        val absX = (chunkX shl 4) + bx
+                                        val absY = by + (i * 16) + minHeight
+                                        val absZ = (chunkZ shl 4) + bz
+
+                                        val matchingCanopy = canopies.firstOrNull { it.contains(absX, absY, absZ) }
+                                        if (matchingCanopy != null) {
+                                            val overrideId = treeOverrideBiomeMap[currentBiomeId]?.get(matchingCanopy.bpId)
+                                            if (overrideId != null) {
+                                                targetBiomeId = overrideId
+                                            }
+                                        }
+                                    }
+
+                                    if (targetBiomeId != null && currentBiomeId != targetBiomeId) {
+                                        if (isGlobal || currentUniqueBiomes.contains(targetBiomeId) || addedBiomes.contains(targetBiomeId) || (currentUniqueBiomes.size + addedBiomes.size < 7)) {
+                                            biomeData.set(biomeX, biomeY, biomeZ, targetBiomeId)
+                                            addedBiomes.add(targetBiomeId)
                                             sectionModified = true
                                         } else {
-                                            // LIMIT EXCEEDED! Color the foliage in any already loaded seasonal color.
                                             val safeFallback = addedBiomes.firstOrNull()
                                             if (safeFallback != null) {
                                                 biomeData.set(biomeX, biomeY, biomeZ, safeFallback)
@@ -402,17 +408,11 @@ object BiomeRegistryInterceptor : PacketListener {
             }
 
             if (modified) {
-                // If anything changed, signal PacketEvents to recalculate and write the new buffer safely.
                 event.markForReEncode(true)
             }
-        } catch (e: Exception) {
-            // Silently swallow random chunk corruption to prevent player kicks.
-        }
+        } catch (e: Exception) {}
     }
 
-    /**
-     * Creates a fallback blank NBT compound for a biome if the original cannot be parsed.
-     */
     private fun createDefaultBiomeNbt(): NBTCompound {
         val nbt = NBTCompound()
         nbt.setTag("has_precipitation", NBTByte(1.toByte()))
@@ -422,9 +422,6 @@ object BiomeRegistryInterceptor : PacketListener {
         return nbt
     }
 
-    /**
-     * Extracts or initializes the "effects" NBT compound where biome colors are stored.
-     */
     private fun getOrCreateEffects(nbt: NBTCompound): NBTCompound {
         var effects = getTagSafe(nbt, "effects") as? NBTCompound
         if (effects == null) {
@@ -434,9 +431,6 @@ object BiomeRegistryInterceptor : PacketListener {
         return effects
     }
 
-    /**
-     * Deep clones a biome NBT so we can modify colors without altering the vanilla reference.
-     */
     private fun cloneBiomeNbt(original: NBTCompound): NBTCompound {
         val clone = NBTCompound()
         for ((key, tag) in original.tags) {
@@ -453,9 +447,6 @@ object BiomeRegistryInterceptor : PacketListener {
         return clone
     }
 
-    /**
-     * Parses the vanilla biome NBT data and caches the original values for safety.
-     */
     private fun extractAndCacheBiomeData(fullKey: String, nbt: NBTCompound) {
         try {
             val split = fullKey.split(":")
@@ -480,9 +471,7 @@ object BiomeRegistryInterceptor : PacketListener {
             )
 
             vanillaBiomesCache[fullKey] = cachedBiome
-        } catch (e: Exception) {
-            plugin.logger.warning("§c[Vivaldi-DEBUG] Failed to parse NBT for biome $fullKey: ${e.message}")
-        }
+        } catch (e: Exception) {}
     }
 
     private fun getTagSafe(nbt: NBTCompound, key: String): Any? {
@@ -503,9 +492,6 @@ object BiomeRegistryInterceptor : PacketListener {
         } catch (e: Exception) { default }
     }
 
-    /**
-     * Injects the calculated hex colors from our custom season palette into the biome's NBT.
-     */
     private fun injectColors(effects: NBTCompound, palette: BiomeColorPalette) {
         effects.setTag("grass_color", NBTInt(parseHexColor(palette.grassColor)))
         effects.setTag("foliage_color", NBTInt(parseHexColor(palette.foliageColor)))
