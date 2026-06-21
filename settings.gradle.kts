@@ -1,1 +1,1 @@
-rootProject.name = "embark-wilderness"
+rootProject.name = "vxseasons"
