@@ -73,7 +73,7 @@ object BiomeRegistryInterceptor : PacketListener {
     }
 
     /**
-     * Minecraft hardcodes Birch, Spruce, and Cherry leaves to ignore biome colormaps.
+     * Minecraft hardcodes Birch and Spruce leaves to ignore biome colormaps.
      * To make them change colors during seasons, we generate a map that translates
      * every possible state of these leaves into the equivalent state of Oak leaves,
      * which DO respond to biome colors.
@@ -81,11 +81,17 @@ object BiomeRegistryInterceptor : PacketListener {
     fun buildLeafMappings() {
         if (leafReplacementMap.isNotEmpty()) return
 
+        val replaceEnabled = try {
+            plugin.gameplayManager.config.environment.packetLeafReplacement
+        } catch (e: Exception) {
+            false
+        }
+        if (!replaceEnabled) return
+
         try {
             val targets = mapOf(
                 org.bukkit.Material.BIRCH_LEAVES to org.bukkit.Material.OAK_LEAVES,
-                org.bukkit.Material.SPRUCE_LEAVES to org.bukkit.Material.OAK_LEAVES,
-                org.bukkit.Material.CHERRY_LEAVES to org.bukkit.Material.OAK_LEAVES
+                org.bukkit.Material.SPRUCE_LEAVES to org.bukkit.Material.OAK_LEAVES
             )
 
             // Build the all-leaf lookup set first for ALL native leaf types
@@ -144,6 +150,14 @@ object BiomeRegistryInterceptor : PacketListener {
 
     private fun handleRegistryData(event: PacketSendEvent) {
         try {
+            val config = try { plugin.gameplayManager.config } catch (e: Exception) { null }
+            val replaceLeaves = config?.environment?.packetLeafReplacement ?: true
+
+            // Trigger mapping builds during registry configuration phase when connecting
+            if (replaceLeaves && leafReplacementMap.isEmpty()) {
+                buildLeafMappings()
+            }
+
             val wrapper = WrapperConfigServerRegistryData(event)
             val registryId = wrapper.registryKey?.toString() ?: "null"
 
@@ -255,7 +269,12 @@ object BiomeRegistryInterceptor : PacketListener {
     }
 
     private fun handleChunkData(event: PacketSendEvent) {
-        if (leafReplacementMap.isEmpty()) buildLeafMappings()
+        val config = try { plugin.gameplayManager.config } catch (e: Exception) { null }
+        val replaceLeaves = config?.environment?.packetLeafReplacement ?: true
+
+        if (replaceLeaves && leafReplacementMap.isEmpty()) {
+            buildLeafMappings()
+        }
         if (vanillaToSeasonalNormalMap.isEmpty()) return
 
         try {
@@ -352,7 +371,7 @@ object BiomeRegistryInterceptor : PacketListener {
                                 val currentStateId = chunk.get(bx, by, bz)
                                 if (currentStateId.globalId == 0) continue
 
-                                val replacementStateId = leafReplacementMap[currentStateId.globalId]
+                                val replacementStateId = if (replaceLeaves) leafReplacementMap[currentStateId.globalId] else null
                                 val isLeaf = replacementStateId != null || allLeafGlobalIds.contains(currentStateId.globalId)
 
                                 if (isLeaf) {

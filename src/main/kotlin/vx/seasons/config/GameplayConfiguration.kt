@@ -20,7 +20,7 @@ class GameplayConfiguration {
 
     class GeneralConfig {
         @Comment("Message prefix.")
-        var messagePrefix: String = "§2Embark §aWilderness §8| §7"
+        var messagePrefix: String = "§b𝚟𝚡𝚜𝚎𝚊𝚜𝚘𝚗𝚜 §8> §7"
 
         @Comment(
             "If needed, you can disable the seasonal cycle so that players do not receive modified packets.",
@@ -38,10 +38,10 @@ class GameplayConfiguration {
 
     class DynamicForestConfig {
         @Comment("Enable or disable the dynamic forest feature entirely. Every new and existing tree will be replaced by procedurally generated.")
-        var enabled: Boolean = true
+        var enabled: Boolean = false
 
         @Comment("If true, saplings will instantly grow into fully mature dynamic trees, bypassing the slow growth phases.")
-        var instantTrees: Boolean = false
+        var instantTrees: Boolean = true
 
         @Comment("How many unique trees of each type to pre-generate on startup.", "Higher value = more variety but slightly more RAM usage (100-300 is optimal).")
         var treePoolSize: Int = 200
@@ -111,6 +111,9 @@ class GameplayConfiguration {
             "minecraft:small_end_islands",
             "minecraft:end_barrens"
         )
+
+        @Comment("Enable replacement of non-colorable leaves (Birch & Spruce) with Oak leaves on the packet level to apply biome colors.")
+        var packetLeafReplacement: Boolean = true
 
         val plantGrowth = PlantGrowthFeature.PlantGrowthConfig()
         val repopulator = SeasonalChunkSyncFeature.ChunkSyncConfig()
