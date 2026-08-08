@@ -13,7 +13,9 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.player.AsyncPlayerChatEvent
+import org.bukkit.event.player.PlayerJoinEvent
 import vx.seasons.SeasonsPlugin.Companion.gson
+import vx.seasons.SeasonsPlugin.Companion.lang
 import vx.seasons.SeasonsPlugin.Companion.plugin
 import vx.seasons.SeasonsPlugin.Companion.sendFormattedMessage
 import vx.seasons.config.GameplayConfiguration
@@ -24,11 +26,12 @@ import vx.seasons.network.CachedVanillaBiome
 import vx.seasons.season.Season
 import vx.seasons.season.biome.BiomeGenerationController
 import vx.seasons.season.biome.GeneratedBiomeContainer
+import vx.seasons.gameplay.feature.environment.forest.DynamicForestFeature
 import java.io.File
 import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
 
-@CommandAlias("seasons|vvd")
+@CommandAlias("seasons|vxs")
 class VivaldiCommand : BaseCommand(), Listener {
 
     private val isRunning = AtomicBoolean(false)
@@ -36,18 +39,10 @@ class VivaldiCommand : BaseCommand(), Listener {
     private val biomesFolder = File(plugin.dataFolder, "biomes")
     private var bossBar: BossBar? = null
 
-    private enum class SetupStep { KEY, LANGUAGE, SETTING, NAMING }
-    private data class Session(val type: ProviderType, var step: SetupStep)
-
-    private val setupSessions = mutableMapOf<UUID, Session>()
+    private val setupSessions = mutableSetOf<UUID>()
 
     init {
         plugin.server.pluginManager.registerEvents(this, plugin)
-
-        // Autocomplete for providers
-        plugin.commandManager.commandCompletions.registerCompletion("providers") {
-            ProviderType.entries.map { it.name }
-        }
 
         // Autocomplete for seasons
         plugin.commandManager.commandCompletions.registerCompletion("seasons") {
@@ -57,32 +52,80 @@ class VivaldiCommand : BaseCommand(), Listener {
         if (!biomesFolder.exists()) biomesFolder.mkdirs()
     }
 
-    private companion object {
-        const val SETUP_PREFIX = "§6[Vivaldi AI] "
-        const val STEP_PREFIX = "§e[Step {n}/4] "
+    // --- OP / ADMIN JOIN NOTIFICATION ---
 
-        const val MSG_START = "$SETUP_PREFIX§7Select your provider: §e/vvd provider <type>"
-        const val MSG_LIST = "§7Available: §fCEREBRAS (recommended), GROQ, GEMINI, OPENROUTER, DEEPSEEK, CHATGPT, ANYTHINGLLM"
-        const val MSG_INVALID = "§cInvalid provider type!"
-        const val MSG_CANCELLED = "§c[Vivaldi AI] Setup cancelled."
+    @EventHandler
+    fun onPlayerJoin(event: PlayerJoinEvent) {
+        val player = event.player
+        if (player.isOp || player.hasPermission("seasons.admin.setup")) {
+            val providerConfig = plugin.providerManager.config
+            val gameplayConfig = plugin.gameplayManager.config
 
-        const val STEP_1_PROMPT = "${STEP_PREFIX}§fPaste your §6API Key §fin chat. §7(It will be hidden)."
-        const val STEP_2_PROMPT = "${STEP_PREFIX}§fType the §6Language §ffor prompts (e.g., English):"
-        const val STEP_3_PROMPT = "${STEP_PREFIX}§fType the §6Thematic Setting §f(e.g., Realistic, Fantasy):"
-        const val STEP_4_PROMPT = "${STEP_PREFIX}§fType the §6Naming Style §f(e.g., Standard):"
+            if (providerConfig.apiKey == "YOUR_API_KEY" || providerConfig.apiKey.isBlank()) {
+                player.sendFormattedMessage(
+                    lang("setup.notify_op", "&#F43F5EPlugin is not configured! Run &#F59E0B/vxs setup &#F43F5Eto start setup or &#F59E0B/vxs disable ai &#F43F5Eto disable AI features.")
+                )
+            }
 
-        const val MSG_SUCCESS = "§a[Vivaldi AI] Configuration complete! Provider: §6{provider} §a| Model: §e{model}"
-        const val MSG_SUGGESTION = "$SETUP_PREFIX§7You can now generate seasonal biomes using §e/vvd dev generate§7."
+            if (!gameplayConfig.general.enableWorldModifications) {
+                player.sendFormattedMessage(
+                    lang("activation.notify_modifications", "&#CBD5E1Landscape modifications are currently &#F59E0Bdisabled&#CBD5E1. Run &#F59E0B/vxs activate modifications &#CBD5E1to enable snow, ice freezing/melting, plant growth & trees.")
+                )
+            }
 
-        const val MSG_DISABLED_HEADER = "$SETUP_PREFIX§cAI features have been disabled."
-        const val MSG_DISABLED_MODE = "§7Vivaldi is now running in §eDeterministic Mode§7."
-        const val MSG_DISABLED_INFO_1 = "§7- Generative biomes: §cOFF"
-        const val MSG_DISABLED_INFO_2 = "§7- Content will be loaded strictly from local JSON configuration files."
+            if (!gameplayConfig.dynamicForest.enabled) {
+                player.sendFormattedMessage(
+                    lang("activation.notify_trees", "&#CBD5E1Procedural trees are currently &#F59E0Bdisabled&#CBD5E1. Run &#F59E0B/vxs activate trees &#CBD5E1to replace &#F59E0BALL TREES &#CBD5E1in the world with procedurally generated ones.")
+                )
+            }
+        }
+    }
 
-        const val MSG_DONATE_DIVIDER = "§8§m--------------------------------------------------"
-        const val MSG_DONATE_1 = "§7Support the development of §6Vivaldi §7and my other projects"
-        const val MSG_DONATE_2 = "§7via Ko-fi if you enjoy the plugin:"
-        const val MSG_DONATE_LINK = "§b➤ https://ko-fi.com/vxquid"
+    // --- ACTIVATION COMMANDS ---
+
+    @Subcommand("activate modifications")
+    @CommandPermission("seasons.admin.setup")
+    fun onActivateModifications(player: Player) {
+        val config = plugin.gameplayManager.config
+        if (config.general.enableWorldModifications) {
+            player.sendFormattedMessage(lang("activation.modifications_already_active", "&#F43F5EWorld modifications are already enabled!"))
+            return
+        }
+
+        config.general.enableWorldModifications = true
+        ConfigurationManager.save(config)
+
+        plugin.gameplayManager.registerFeatures()
+        plugin.gameplayManager.startAllTasks()
+
+        player.sendFormattedMessage(lang("activation.modifications_success", "&#34D399World modifications have been successfully ENABLED!"))
+        player.sendFormattedMessage(lang("activation.modifications_info", "&#CBD5E1Active features: Snow accumulation, plant growth, river/ice freezing & melting, procedural trees."))
+    }
+
+    @Subcommand("activate trees")
+    @CommandPermission("seasons.admin.setup")
+    fun onActivateTrees(player: Player) {
+        val config = plugin.gameplayManager.config
+        if (config.dynamicForest.enabled) {
+            player.sendFormattedMessage(lang("activation.trees_already_active", "&#F43F5EProcedural trees are already enabled!"))
+            return
+        }
+
+        config.dynamicForest.enabled = true
+
+        if (!config.general.enableWorldModifications) {
+            config.general.enableWorldModifications = true
+            plugin.gameplayManager.registerFeatures()
+        }
+
+        ConfigurationManager.save(config)
+
+        try {
+            DynamicForestFeature.start()
+        } catch (_: Exception) {}
+
+        player.sendFormattedMessage(lang("activation.trees_success", "&#34D399Procedural trees feature has been ENABLED!"))
+        player.sendFormattedMessage(lang("activation.trees_warning", "&#F43F5EWARNING: &#F59E0BProcedurally generated trees will now replace ABSOLUTELY ALL TREES IN THE WORLD!"))
     }
 
     // --- SEASON MANAGEMENT ---
@@ -91,7 +134,9 @@ class VivaldiCommand : BaseCommand(), Listener {
     @CommandPermission("seasons.admin.season")
     fun onSeasonInfo(player: Player) {
         val current = plugin.seasonManager.currentSeason
-        player.sendFormattedMessage("Current active season is: §6${current.name}")
+        player.sendFormattedMessage(
+            lang("season.info", "&#CBD5E1Current active season is: &#F59E0B{season}").replace("{season}", current.name)
+        )
     }
 
     @Subcommand("season set")
@@ -101,16 +146,25 @@ class VivaldiCommand : BaseCommand(), Listener {
         val season = try {
             Season.valueOf(seasonName.uppercase())
         } catch (_: Exception) {
-            player.sendFormattedMessage("§cInvalid season! Available: §e${Season.entries.joinToString { it.name }}")
+            player.sendFormattedMessage(
+                lang("season.invalid", "&#F43F5EInvalid season! Available: &#F59E0B{seasons}")
+                    .replace("{seasons}", Season.entries.joinToString { it.name })
+            )
             return
         }
 
         if (plugin.seasonManager.currentSeason == season) {
-            player.sendFormattedMessage("§cThe season is already set to ${season.name}!")
+            player.sendFormattedMessage(
+                lang("season.already_set", "&#F43F5EThe season is already set to {season}!")
+                    .replace("{season}", season.name)
+            )
             return
         }
 
-        player.sendFormattedMessage("Forcefully changing season to §6${season.name}§a...")
+        player.sendFormattedMessage(
+            lang("season.changing", "&#CBD5E1Forcefully changing season to &#2DD4BF{season}&#34D399...")
+                .replace("{season}", season.name)
+        )
         plugin.seasonManager.setSeason(season)
     }
 
@@ -118,115 +172,99 @@ class VivaldiCommand : BaseCommand(), Listener {
     @CommandPermission("seasons.admin.season")
     fun onSeasonNext(player: Player) {
         val nextSeason = plugin.seasonManager.currentSeason.next()
-        player.sendFormattedMessage("Advancing to the next season: §6${nextSeason.name}§a...")
+        player.sendFormattedMessage(
+            lang("season.next", "&#CBD5E1Advancing to the next season: &#2DD4BF{season}&#34D399...")
+                .replace("{season}", nextSeason.name)
+        )
         plugin.seasonManager.setSeason(nextSeason)
     }
 
     // --- SETUP LOGIC ---
 
-    @Subcommand("setup")
+    @Subcommand("setup|provider")
     @CommandPermission("seasons.admin.setup")
     fun onSetup(player: Player) {
-        player.sendFormattedMessage(MSG_START)
-        player.sendFormattedMessage(MSG_LIST)
+        val defaultModel = "gemini-3.1-flash-lite"
+        val url = "https://aistudio.google.com/app/apikey"
+
+        plugin.providerManager.config.model = defaultModel
+        plugin.providerManager.config.providerType = ProviderType.GEMINI
+        setupSessions.add(player.uniqueId)
+
+        player.sendFormattedMessage(
+            lang("setup.selected_provider", "&#CBD5E1Using &#2DD4BF{provider}&#CBD5E1. Get API key here: &#38BDF8{url}")
+                .replace("{provider}", ProviderType.GEMINI.name)
+                .replace("{url}", url)
+        )
+        player.sendFormattedMessage(
+            lang("setup.selected_model", "&#CBD5E1Model &#34D399{model} &#CBD5E1selected.")
+                .replace("{model}", defaultModel)
+        )
+        player.sendFormattedMessage(lang("setup.step_1_prompt", "&#F59E0B[Step 1/1] &#CBD5E1Paste your &#2DD4BFAPI Key &#CBD5E1in chat. &#64748B(It will be hidden)."))
     }
 
     @Subcommand("disable ai")
     @CommandPermission("seasons.admin.setup")
     fun onDisableAI(player: Player) {
-        if (setupSessions.containsKey(player.uniqueId)) {
-            setupSessions.remove(player.uniqueId)
-        }
+        setupSessions.remove(player.uniqueId)
         val config = plugin.providerManager.config
         config.apiKey = "DISABLED"
         ConfigurationManager.save(config)
 
-        player.sendFormattedMessage(MSG_DISABLED_HEADER)
-        player.sendFormattedMessage(MSG_DISABLED_MODE)
-        player.sendFormattedMessage(MSG_DISABLED_INFO_1)
-        player.sendFormattedMessage(MSG_DISABLED_INFO_2)
-        sendSupportMessage(player)
-    }
-
-    @Subcommand("provider")
-    @CommandPermission("seasons.admin.setup")
-    @CommandCompletion("@providers")
-    fun onSelectProvider(player: Player, @Values("@providers") type: String) {
-        val providerType = try { ProviderType.valueOf(type.uppercase()) } catch (_: Exception) {
-            player.sendFormattedMessage(MSG_INVALID)
-            return
-        }
-
-        val (url, defaultModel) = when (providerType) {
-            ProviderType.CEREBRAS -> "https://cloud.cerebras.ai" to "llama3.1-8b"
-            else -> "Provider Dashboard" to "default-model"
-        }
-
-        plugin.providerManager.config.model = defaultModel
-        plugin.providerManager.config.providerType = providerType
-        setupSessions[player.uniqueId] = Session(providerType, SetupStep.KEY)
-
-        player.sendFormattedMessage("$SETUP_PREFIX§7Selected §e${providerType.name}§7. URL: §b$url")
-        player.sendFormattedMessage("$SETUP_PREFIX§7Recommended model §a$defaultModel §7has been automatically selected.")
-        player.sendFormattedMessage(STEP_1_PROMPT.replace("{n}", "1"))
+        player.sendFormattedMessage(lang("setup.disabled_header", "&#F43F5EAI features have been disabled."))
+        player.sendFormattedMessage(lang("setup.disabled_mode", "&#CBD5E1Plugin is now running in &#F59E0BDeterministic Mode&#CBD5E1."))
+        player.sendFormattedMessage(lang("setup.disabled_info_1", "&#CBD5E1- Generative biomes: &#F43F5EOFF"))
+        player.sendFormattedMessage(lang("setup.disabled_info_2", "&#CBD5E1- Content will be loaded strictly from local JSON configuration files."))
+        sendOpenSourceMessage(player)
     }
 
     @EventHandler(priority = EventPriority.LOWEST)
     fun onChatInterceptor(event: AsyncPlayerChatEvent) {
         val player = event.player
-        val session = setupSessions[player.uniqueId] ?: return
+        if (!setupSessions.contains(player.uniqueId)) return
 
         event.isCancelled = true
         val input = event.message.trim()
 
         if (input.equals("cancel", true)) {
             setupSessions.remove(player.uniqueId)
-            player.sendFormattedMessage(MSG_CANCELLED)
+            player.sendFormattedMessage(lang("setup.cancelled", "&#F43F5ESetup cancelled."))
             return
         }
 
         val config = plugin.providerManager.config
+        config.apiKey = input
+        config.language = "English"
+        config.setting = "Minecraft Universe"
+        config.namingStyle = "Fantasy Names"
 
-        when (session.step) {
-            SetupStep.KEY -> {
-                config.apiKey = input
-                session.step = SetupStep.LANGUAGE
-                player.sendFormattedMessage(STEP_2_PROMPT.replace("{n}", "2"))
-            }
-            SetupStep.LANGUAGE -> {
-                config.language = input
-                session.step = SetupStep.SETTING
-                player.sendFormattedMessage(STEP_3_PROMPT.replace("{n}", "3"))
-            }
-            SetupStep.SETTING -> {
-                config.setting = input
-                session.step = SetupStep.NAMING
-                player.sendFormattedMessage(STEP_4_PROMPT.replace("{n}", "4"))
-            }
-            SetupStep.NAMING -> {
-                config.namingStyle = input
-                ConfigurationManager.save(config)
-                setupSessions.remove(player.uniqueId)
+        ConfigurationManager.save(config)
+        setupSessions.remove(player.uniqueId)
 
-                plugin.server.scheduler.runTask(plugin, Runnable {
-                    plugin.providerManager.load()
-                    player.sendFormattedMessage(MSG_SUCCESS
-                        .replace("{provider}", config.providerType.name)
-                        .replace("{model}", config.model))
-                    player.sendFormattedMessage(MSG_SUGGESTION)
-                    sendSupportMessage(player)
-                })
-            }
-        }
+        plugin.server.scheduler.runTask(plugin, Runnable {
+            plugin.providerManager.load()
+            player.sendFormattedMessage(
+                lang("setup.success", "&#34D399Configuration complete! Provider: &#2DD4BF{provider} &#34D399| Model: &#F59E0B{model}")
+                    .replace("{provider}", config.providerType.name)
+                    .replace("{model}", config.model)
+            )
+            player.sendFormattedMessage(lang("setup.suggestion", "&#CBD5E1You can now generate seasonal biomes using &#F59E0B/vxs dev generate&#CBD5E1."))
+            player.sendFormattedMessage(lang("setup.activation_prompt", "&#CBD5E1Run &#F59E0B/vxs activate modifications &#CBD5E1for landscape mechanics and &#F59E0B/vxs activate trees &#CBD5E1to enable procedural trees."))
+            sendOpenSourceMessage(player)
+        })
     }
 
-    private fun sendSupportMessage(player: Player) {
+    private fun sendOpenSourceMessage(player: Player) {
         player.sendFormattedMessage(" ")
-        player.sendFormattedMessage(MSG_DONATE_DIVIDER)
-        player.sendFormattedMessage(MSG_DONATE_1)
-        player.sendFormattedMessage(MSG_DONATE_2)
-        player.sendFormattedMessage(MSG_DONATE_LINK)
-        player.sendFormattedMessage(MSG_DONATE_DIVIDER)
+        player.sendFormattedMessage(lang("open_source.divider", "&#334155--------------------------------------------------"))
+        player.sendFormattedMessage(lang("open_source.title", "&#CBD5E1vxseasons is an &#2DD4BFOpen Source &#CBD5E1project!"))
+        player.sendFormattedMessage(lang("open_source.sub", "&#CBD5E1Explore the source code or report issues on GitHub:"))
+        player.sendFormattedMessage(lang("open_source.link", "&#38BDF8➤ https://github.com/vxquid/vxseasons"))
+        player.sendFormattedMessage(lang("open_source.tree_editor_sub", "&#CBD5E1Create and customize procedural trees using Web Tree Editor:"))
+        player.sendFormattedMessage(lang("open_source.tree_editor_link", "&#2DD4BF➤ https://vxquid.github.io/vxseasons-tree-editor/"))
+        player.sendFormattedMessage(lang("open_source.discord_sub", "&#CBD5E1Join our Discord community for support and updates:"))
+        player.sendFormattedMessage(lang("open_source.discord_link", "&#818CF8➤ https://discord.com/invite/DKZkwGvEj3"))
+        player.sendFormattedMessage(lang("open_source.divider", "&#334155--------------------------------------------------"))
     }
 
     // --- GENERATION LOGIC ---
@@ -235,12 +273,12 @@ class VivaldiCommand : BaseCommand(), Listener {
     @CommandPermission("seasons.admin.generate")
     fun onGenerateInfo(player: Player) {
         if (isRunning.get()) {
-            player.sendFormattedMessage("§cBiome generation is already running!")
+            player.sendFormattedMessage(lang("generation.already_running", "&#F43F5EBiome generation is already running!"))
             return
         }
 
         if (queueFile.exists()) {
-            player.sendFormattedMessage("§eFound an interrupted generation session. Use §6/vvd dev generate resume §eto continue.")
+            player.sendFormattedMessage(lang("generation.interrupted", "&#F59E0BFound an interrupted generation session. Use &#2DD4BF/vxs dev generate resume &#F59E0Bto continue."))
             return
         }
 
@@ -265,15 +303,21 @@ class VivaldiCommand : BaseCommand(), Listener {
         }
 
         if (biomes.isEmpty()) {
-            player.sendFormattedMessage("Biome list is empty or all biomes are excluded in config!")
+            player.sendFormattedMessage(lang("generation.empty", "&#F43F5EBiome list is empty or all biomes are excluded in config!"))
             return
         }
 
         val byNamespace = biomes.groupBy { it.namespace }
 
-        player.sendFormattedMessage("§eReady to generate seasonal variants for §6${biomes.size} §ebiomes.")
-        player.sendFormattedMessage("§7Detected generators: §f${byNamespace.keys.joinToString(", ")}")
-        player.sendFormattedMessage("§aType §6/vvd dev generate accept §ato start.")
+        player.sendFormattedMessage(
+            lang("generation.ready", "&#F59E0BReady to generate seasonal variants for &#2DD4BF{count} &#F59E0Bbiomes.")
+                .replace("{count}", biomes.size.toString())
+        )
+        player.sendFormattedMessage(
+            lang("generation.generators", "&#CBD5E1Detected generators: &#E2E8F0{generators}")
+                .replace("{generators}", byNamespace.keys.joinToString(", "))
+        )
+        player.sendFormattedMessage(lang("generation.start_prompt", "&#34D399Type &#F59E0B/vxs dev generate accept &#34D399to start."))
     }
 
     @Subcommand("dev generate accept|resume")
@@ -304,7 +348,7 @@ class VivaldiCommand : BaseCommand(), Listener {
             }.map { "${it.namespace}:${it.key}" }
 
             if (biomes.isEmpty()) {
-                player.sendFormattedMessage("Biome list is empty!")
+                player.sendFormattedMessage(lang("generation.empty_list", "&#F43F5EBiome list is empty!"))
                 return
             }
 
@@ -322,7 +366,7 @@ class VivaldiCommand : BaseCommand(), Listener {
         val total = config.getInt("total", 1)
 
         bossBar = Bukkit.createBossBar(
-            "§dAI: Initializing Multi-Generator Biomes...",
+            lang("generation.bossbar_init", "&#2DD4BFAI: Initializing Multi-Generator Biomes..."),
             BarColor.GREEN, BarStyle.SOLID
         ).apply { addPlayer(admin) }
 
@@ -339,7 +383,6 @@ class VivaldiCommand : BaseCommand(), Listener {
                     val namespace = split.getOrNull(0) ?: "minecraft"
                     val key = split.getOrNull(1) ?: fullKeyStr
 
-                    // If packets cached the biome, use it. Otherwise, create a default template.
                     val cachedBiome = BiomeRegistryInterceptor.vanillaBiomesCache[fullKeyStr] ?: CachedVanillaBiome(
                         namespace = namespace,
                         key = key,
@@ -354,7 +397,11 @@ class VivaldiCommand : BaseCommand(), Listener {
                     )
 
                     val progress = ((total - pending.size).toDouble() / total * 100).toInt()
-                    updateBar("§aGenerating: §e${cachedBiome.namespace} §7| §f${cachedBiome.key} §7($progress%)", progress.toDouble() / 100)
+                    val progressTitle = lang("generation.bossbar_progress", "&#34D399Generating: &#F59E0B{namespace} &#64748B| &#CBD5E1{key} &#64748B({progress}%)")
+                        .replace("{namespace}", cachedBiome.namespace)
+                        .replace("{key}", cachedBiome.key)
+                        .replace("{progress}", progress.toString())
+                    updateBar(progressTitle, progress.toDouble() / 100)
 
                     val generatorFolder = File(biomesFolder, cachedBiome.namespace)
                     if (!generatorFolder.exists()) generatorFolder.mkdirs()
@@ -382,7 +429,10 @@ class VivaldiCommand : BaseCommand(), Listener {
                         plugin.seasonalBiomeManager.loadAllBiomes()
                         handleCooldown(2, progress, fullKeyStr)
                     } else {
-                        plugin.logger.warning("Failed to generate biome: $fullKeyStr. Retrying in 10 seconds...")
+                        plugin.logger.warning(
+                            lang("generation.failed", "Failed to generate biome: {biome}. Retrying in 10 seconds...")
+                                .replace("{biome}", fullKeyStr)
+                        )
                         handleCooldown(10, progress, fullKeyStr, isError = true)
                     }
                 }
@@ -391,7 +441,7 @@ class VivaldiCommand : BaseCommand(), Listener {
                     bossBar?.removeAll()
                     queueFile.delete()
                     isRunning.set(false)
-                    admin.sendFormattedMessage("Biome generation successfully completed!")
+                    admin.sendFormattedMessage(lang("generation.completed", "&#34D399Biome generation successfully completed!"))
                 })
 
             } catch (e: Exception) {
@@ -403,11 +453,16 @@ class VivaldiCommand : BaseCommand(), Listener {
     }
 
     private fun handleCooldown(seconds: Int, progress: Int, biome: String, isError: Boolean = false) {
-        val color = if (isError) "§c" else "§7"
+        val color = if (isError) "&#F43F5E" else "&#64748B"
         val status = if (isError) "Rate Limit/Error" else "Cooldown"
 
         for (i in seconds downTo 1) {
-            updateBar("$color$status for $biome... §e${i}s", progress.toDouble() / 100)
+            val title = lang("generation.cooldown_status", "{color}{status} for {biome}... &#F59E0B{seconds}s")
+                .replace("{color}", color)
+                .replace("{status}", status)
+                .replace("{biome}", biome)
+                .replace("{seconds}", i.toString())
+            updateBar(title, progress.toDouble() / 100)
             Thread.sleep(1000)
         }
     }

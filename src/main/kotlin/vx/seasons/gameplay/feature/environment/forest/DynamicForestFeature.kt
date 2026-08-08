@@ -42,6 +42,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 object DynamicForestFeature : Listener {
@@ -85,6 +86,7 @@ object DynamicForestFeature : Listener {
 
     private val treePool = ConcurrentHashMap<String, List<TreeStructureData>>()
     private val skullProfileCache = ConcurrentHashMap<String, PlayerProfile>()
+    private val isGenerating = AtomicBoolean(false)
 
     private val config: GameplayConfiguration.DynamicForestConfig
         get() = plugin.gameplayManager.config.dynamicForest
@@ -159,10 +161,8 @@ object DynamicForestFeature : Listener {
     private val fruitMap = mutableMapOf<String, FruitRule>()
 
     init {
-        if (config.enabled) {
-            loadBlueprints()
-            start()
-        }
+        // Точка входа: загружаем файлы чертежей в RAM. Запуском потоков управляет GameplayManager
+        loadBlueprints()
     }
 
     private fun getUrlFromBase64(base64: String): String? {
@@ -264,24 +264,62 @@ object DynamicForestFeature : Listener {
         }
     }
 
-    private fun start() {
+    fun start(forcePregen: Boolean = false) {
         stop()
+
+        if (blueprints.isEmpty()) {
+            loadBlueprints()
+        }
+
         if (!config.enabled) return
+
+        // Если пулы схем деревьев уже сгенерированы и не запрошен принудительный ресет — сразу запускаем воркеры
+        if (treePool.isNotEmpty() && !forcePregen) {
+            startWorkers()
+            return
+        }
+
+        // Защита от создания дубликатов потоков параллельной генерации
+        if (isGenerating.getAndSet(true)) return
 
         val pregenAmount = config.treePoolSize
 
         plugin.logger.info("Pre-generating tree pool ($pregenAmount per blueprint)...")
         Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
-            val start = System.currentTimeMillis()
-            blueprints.forEach { (id, bp) ->
-                val list = mutableListOf<TreeStructureData>()
-                for (i in 0 until pregenAmount) {
-                    list.add(generateTreeStructure(bp))
+            try {
+                val start = System.currentTimeMillis()
+                val tempPool = ConcurrentHashMap<String, List<TreeStructureData>>()
+
+                blueprints.forEach { (id, bp) ->
+                    val list = mutableListOf<TreeStructureData>()
+                    for (i in 0 until pregenAmount) {
+                        list.add(generateTreeStructure(bp))
+                    }
+                    tempPool[id] = list
                 }
-                treePool[id] = list
+
+                treePool.clear()
+                treePool.putAll(tempPool)
+                plugin.logger.info("Successfully pre-calculated ${blueprints.size * pregenAmount} tree schematics in RAM (${System.currentTimeMillis() - start}ms).")
+            } finally {
+                isGenerating.set(false)
+                Bukkit.getScheduler().runTask(plugin, Runnable {
+                    startWorkers()
+                })
             }
-            plugin.logger.info("Successfully pre-calculated ${blueprints.size * pregenAmount} tree schematics in RAM (${System.currentTimeMillis() - start}ms).")
         })
+    }
+
+    private fun startWorkers() {
+        if (masterWorker != null) return
+
+        // Добавляем все уже загруженные чанки в очередь обработки
+        for (world in Bukkit.getWorlds()) {
+            if (world.name !in plugin.gameplayManager.allowedWorlds) continue
+            for (chunk in world.loadedChunks) {
+                queueChunkForProcessing(chunk, force = true)
+            }
+        }
 
         masterWorker = object : BukkitRunnable() {
             var lastTick = System.currentTimeMillis()
@@ -1201,21 +1239,22 @@ object DynamicForestFeature : Listener {
         }
     }
 
-    private fun queueChunkForProcessing(chunk: org.bukkit.Chunk) {
+    private fun queueChunkForProcessing(chunk: org.bukkit.Chunk, force: Boolean = false) {
         if (!config.enabled) return
         if (chunk.world.name !in plugin.gameplayManager.allowedWorlds) return
 
         val pdc = chunk.persistentDataContainer
-        if (pdc.has(REPLACED_TAG, PersistentDataType.BYTE)) return
+        if (!force && pdc.has(REPLACED_TAG, PersistentDataType.BYTE)) return
         pdc.set(REPLACED_TAG, PersistentDataType.BYTE, 1.toByte())
 
         val worldName = chunk.world.name
         val cx = chunk.x
         val cz = chunk.z
 
+        val delay = if (force) 1L else config.chunkScanDelayTicks
         Bukkit.getScheduler().runTaskLater(plugin, Runnable {
             if (config.enabled) chunkScanQueue.add(ChunkLocation(worldName, cx, cz))
-        }, config.chunkScanDelayTicks)
+        }, delay)
     }
 
     @EventHandler

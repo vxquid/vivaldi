@@ -20,7 +20,7 @@ class GameplayConfiguration {
 
     class GeneralConfig {
         @Comment("Message prefix.")
-        var messagePrefix: String = "§b𝚟𝚡𝚜𝚎𝚊𝚜𝚘𝚗𝚜 §8> §7"
+        var messagePrefix: String = "&#2DD4BF𝚟𝚡𝚜𝚎𝚊𝚜𝚘𝚗𝚜 &#52525B»&#CBD5E1"
 
         @Comment(
             "If needed, you can disable the seasonal cycle so that players do not receive modified packets.",

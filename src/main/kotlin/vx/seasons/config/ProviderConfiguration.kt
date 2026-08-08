@@ -8,35 +8,35 @@ class ProviderConfiguration {
 
     @Comment(
         "The provider type for content generation.",
-        "CEREBRAS (cloud.cerebras.ai) provides blazing fast inference for open-source models (like Llama 3) and offers a generous free tier. Recommended, used by default."
+        "GEMINI (aistudio.google.com) provides fast inference and high quality generations. Recommended, used by default."
     )
-    var providerType: ProviderType = ProviderType.CEREBRAS
+    var providerType: ProviderType = ProviderType.GEMINI
 
     @Comment(
-        "For CEREBRAS, default model is \"qwen-3-235b-a22b-instruct-2507\"."
+        "For GEMINI, default model is \"gemini-3.1-flash-lite\"."
     )
-    var model = "qwen-3-235b-a22b-instruct-2507"
+    var model = "gemini-3.1-flash-lite"
 
-    @Comment("The API key used to authenticate with the selected provider.")
+    @Comment("The API key(s) used to authenticate with Gemini. Can be a single key or multiple keys separated by commas.")
     var apiKey: String = "YOUR_API_KEY"
 
     @Comment(
-        "The language for generated content. Specify the desired language (e.g., 'English', 'Spanish', 'Russian', 'Dalek Language', 'Moonspeak', etc.)."
+        "The language for generated content. Specify the desired language (e.g., 'English', 'Spanish', 'Russian', etc.)."
     )
     var language: String = "English"
 
     @Comment(
-        "The naming convention for generated content. For example, 'English Names' for standard English-style names."
+        "The naming convention for generated content. For example, 'Fantasy Names' for standard Fantasy-style names."
     )
     var namingStyle: String = "Fantasy Names"
 
     @Comment(
-        "The thematic setting for content generation. For example, 'Fantasy' for a fantasy-themed world."
+        "The thematic setting for content generation. For example, 'Minecraft Universe' for default atmosphere."
     )
     var setting: String = "Minecraft Universe"
 
     @Comment(
-        "Controls the randomness of generated content. Higher values (e.g., 2.0) increase creativity but may reduce coherence."
+        "Controls the randomness of generated content. Higher values (e.g., 1.0) increase creativity."
     )
     var temperature: Double = 1.0
 
@@ -69,7 +69,7 @@ class ProviderConfiguration {
     )
 
     enum class ProviderType {
-        CEREBRAS
+        GEMINI
     }
 
 }

@@ -1,2 +1,56 @@
-# Example comment.
-example: "This is but an example string."
+# Language configuration for vxseasons plugin
+
+setup:
+  notify_op: "&#F43F5EPlugin is not configured! Run &#F59E0B/vxs setup &#F43F5Eto start setup or &#F59E0B/vxs disable ai &#F43F5Eto disable AI features."
+  cancelled: "&#F43F5ESetup cancelled."
+  step_1_prompt: "&#F59E0B[Step 1/1] &#CBD5E1Paste your &#2DD4BFAPI Key &#CBD5E1in chat. &#64748B(It will be hidden)."
+  selected_provider: "&#CBD5E1Using &#2DD4BF{provider}&#CBD5E1. Get API key here: &#38BDF8{url}"
+  selected_model: "&#CBD5E1Model &#34D399{model} &#CBD5E1selected."
+  success: "&#34D399Configuration complete! Provider: &#2DD4BF{provider} &#34D399| Model: &#F59E0B{model}"
+  suggestion: "&#CBD5E1You can now generate seasonal biomes using &#F59E0B/vxs dev generate&#CBD5E1."
+  activation_prompt: "&#CBD5E1Run &#F59E0B/vxs activate modifications &#CBD5E1for landscape mechanics and &#F59E0B/vxs activate trees &#CBD5E1to enable procedural trees."
+  disabled_header: "&#F43F5EAI features have been disabled."
+  disabled_mode: "&#CBD5E1Plugin is now running in &#F59E0BDeterministic Mode&#CBD5E1."
+  disabled_info_1: "&#CBD5E1- Generative biomes: &#F43F5EOFF"
+  disabled_info_2: "&#CBD5E1- Content will be loaded strictly from local JSON configuration files."
+
+activation:
+  notify_modifications: "&#CBD5E1Landscape modifications are currently &#F59E0Bdisabled&#CBD5E1. Run &#F59E0B/vxs activate modifications &#CBD5E1to enable snow, ice freezing/melting, plant growth & trees."
+  notify_trees: "&#CBD5E1Procedural trees are currently &#F59E0Bdisabled&#CBD5E1. Run &#F59E0B/vxs activate trees &#CBD5E1to replace &#F59E0BALL TREES &#CBD5E1in the world with procedurally generated ones."
+  modifications_already_active: "&#F43F5EWorld modifications are already enabled!"
+  modifications_success: "&#34D399World modifications have been successfully ENABLED!"
+  modifications_info: "&#CBD5E1Active features: Snow accumulation, plant growth, river/ice freezing & melting, procedural trees."
+  trees_already_active: "&#F43F5EWorld modifications are already enabled!"
+  trees_success: "&#34D399Procedural trees feature has been ENABLED!"
+  trees_warning: "&#F43F5EWARNING: &#F59E0BProcedurally generated trees will now replace ABSOLUTELY ALL TREES IN THE WORLD!"
+
+open_source:
+  divider: "&#334155--------------------------------------------------"
+  title: "&#CBD5E1vxseasons is an &#2DD4BFOpen Source &#CBD5E1project!"
+  sub: "&#CBD5E1Explore the source code or report issues on GitHub:"
+  link: "&#38BDF8➤ https://github.com/vxquid/vxseasons"
+  tree_editor_sub: "&#CBD5E1Create and customize procedural trees using Web Tree Editor:"
+  tree_editor_link: "&#2DD4BF➤ https://vxquid.github.io/vxseasons-tree-editor/"
+  discord_sub: "&#CBD5E1Join our Discord community for support and updates:"
+  discord_link: "&#818CF8➤ https://discord.com/invite/DKZkwGvEj3"
+
+season:
+  info: "&#CBD5E1Current active season is: &#F59E0B{season}"
+  invalid: "&#F43F5EInvalid season! Available: &#F59E0B{seasons}"
+  already_set: "&#F43F5EThe season is already set to {season}!"
+  changing: "&#CBD5E1Forcefully changing season to &#2DD4BF{season}&#34D399..."
+  next: "&#CBD5E1Advancing to the next season: &#2DD4BF{season}&#34D399..."
+
+generation:
+  already_running: "&#F43F5EBiome generation is already running!"
+  interrupted: "&#F59E0BFound an interrupted generation session. Use &#2DD4BF/vxs dev generate resume &#F59E0Bto continue."
+  empty: "&#F43F5EBiome list is empty or all biomes are excluded in config!"
+  ready: "&#F59E0BReady to generate seasonal variants for &#2DD4BF{count} &#F59E0Bbiomes."
+  generators: "&#CBD5E1Detected generators: &#E2E8F0{generators}"
+  start_prompt: "&#34D399Type &#F59E0B/vxs dev generate accept &#34D399to start."
+  empty_list: "&#F43F5EBiome list is empty!"
+  bossbar_init: "&#2DD4BFAI: Initializing Multi-Generator Biomes..."
+  bossbar_progress: "&#34D399Generating: &#F59E0B{namespace} &#64748B| &#CBD5E1{key} &#64748B({progress}%)"
+  failed: "&#F43F5EFailed to generate biome: {biome}. Retrying in 10 seconds..."
+  completed: "&#34D399Biome generation successfully completed!"
+  cooldown_status: "{color}{status} for {biome}... &#F59E0B{seconds}s"

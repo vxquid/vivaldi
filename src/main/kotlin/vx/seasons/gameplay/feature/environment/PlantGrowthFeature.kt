@@ -120,8 +120,9 @@ object PlantGrowthFeature : Listener {
         start()
     }
 
-    private fun start() {
+    fun start() {
         if (!cfg.enabled) return
+        if (task != null) return
 
         task = object : BukkitRunnable() {
             override fun run() {
@@ -162,20 +163,16 @@ object PlantGrowthFeature : Listener {
                             val globalZ = (snapshot.z * 16) + lz
 
                             val highestY = snapshot.getHighestBlockYAt(lx, lz)
-                            // BUGFIX: getHighestBlockYAt uses MOTION_BLOCKING heightmap which ignores non-solid blocks like flowers!
-                            // We offset by +3 to guarantee we scan the air/plants resting on top of the solid ground.
                             val startY = minOf(world.maxHeight - 1, highestY + 3)
 
                             var groundY = -1
                             var groundType = Material.AIR
                             var foundAutumnOverride = false
 
-                            // Scan downwards to find the surface
                             for (y in startY downTo world.minHeight) {
                                 val type = snapshot.getBlockType(lx, y, lz)
                                 if (type.isAir) continue
 
-                                // AUTUMN OVERRIDES: Intercept existing flowers and crops before hitting solid ground
                                 if (currentSeason == Season.AUTUMN) {
                                     if (allFlowers.contains(type)) {
                                         if (Random.nextDouble() < cfg.autumnFlowerReplaceChance) {
@@ -201,7 +198,6 @@ object PlantGrowthFeature : Listener {
                                 if (type.isSolid && !type.name.contains("LEAVES") && !type.name.contains("LOG") && !type.name.contains("WOOD")) break
                             }
 
-                            // If we already scheduled an autumn replacement/growth, skip generating a new plant here
                             if (foundAutumnOverride) continue
                             if (groundY == -1 || groundY >= world.maxHeight - 2) continue
 
@@ -211,7 +207,6 @@ object PlantGrowthFeature : Listener {
                             val skyLight = snapshot.getBlockSkyLight(lx, groundY + 1, lz)
                             val roll = Random.nextDouble()
 
-                            // Proximity water scan
                             var nearWater = false
                             val minWX = maxOf(0, lx - 4); val maxWX = minOf(15, lx + 4)
                             val minWZ = maxOf(0, lz - 4); val maxWZ = minOf(15, lz + 4)
@@ -223,7 +218,6 @@ object PlantGrowthFeature : Listener {
                                 }
                             }
 
-                            // Strict adjacent water scan
                             var adjacentWater = false
                             if (lx > 0 && snapshot.getBlockType(lx - 1, groundY, lz) == Material.WATER) adjacentWater = true
                             if (lx < 15 && snapshot.getBlockType(lx + 1, groundY, lz) == Material.WATER) adjacentWater = true
@@ -336,7 +330,6 @@ object PlantGrowthFeature : Listener {
                         }
                     }
 
-                    // [SYNCHRONOUS PHASE]
                     if (placements.isNotEmpty()) {
                         Bukkit.getScheduler().runTask(plugin, Runnable {
                             for (p in placements) {
@@ -345,14 +338,11 @@ object PlantGrowthFeature : Listener {
                                 val actualY = p.overrideY ?: findGroundY(p.world, p.x, p.z)
                                 if (actualY == -1) continue
 
-                                // 1. AUTUMN MODIFICATIONS (Targets existing blocks)
                                 if (p.mode == GrowthMode.REPLACE_WITH_LEAF_LITTER) {
                                     val block = p.world.getBlockAt(p.x, actualY, p.z)
-                                    // Failsafe: make sure the flower wasn't already broken by a player
                                     if (allFlowers.contains(block.type)) {
                                         val blockData = block.blockData
                                         if (blockData is Bisected) {
-                                            // Handle 2-tall flowers safely so they don't trigger physics updates and drop items
                                             if (blockData.half == Bisected.Half.TOP) {
                                                 val bottom = block.getRelative(BlockFace.DOWN)
                                                 block.setType(Material.AIR, false)
@@ -373,14 +363,12 @@ object PlantGrowthFeature : Listener {
                                     val block = p.world.getBlockAt(p.x, actualY, p.z)
                                     val blockData = block.blockData as? Ageable
                                     if (blockData != null && crops.contains(block.type)) {
-                                        // Massive harvest boost: jump 2 to 4 growth stages instantly
                                         blockData.age = minOf(blockData.maximumAge, blockData.age + Random.nextInt(2, 5))
                                         block.setBlockData(blockData, false)
                                     }
                                     continue
                                 }
 
-                                // 2. STANDARD PLACEMENTS (Targets empty air above ground)
                                 val groundBlock = p.world.getBlockAt(p.x, actualY, p.z)
                                 val airBlock = p.world.getBlockAt(p.x, actualY + 1, p.z)
 

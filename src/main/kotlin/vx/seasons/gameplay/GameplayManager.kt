@@ -20,21 +20,54 @@ class GameplayManager(val plugin: SeasonsPlugin) : Listener {
     val config: GameplayConfiguration = ConfigurationManager.load(GameplayConfiguration::class.java)
     val allowedWorlds: Set<String> = config.worlds.allowedWorlds.toSet()
 
+    private var eventsRegistered = false
+    private val featureListeners = mutableListOf<Listener>()
+
     fun registerFeatures() {
-
-        // Enable features only if user enabled the main functional of the plugin.
         if (config.general.enableWorldModifications) {
-            this.registerFeature(PlantGrowthFeature,
-                SeasonalChunkSyncFeature, SeasonalMeltingFeature, SeasonalDaylightFeature, SeasonalWeatherFeature,
-                SnowAccumulationFeature, WaterFreezingFeature, DynamicForestFeature
-            )
-            featureListeners.forEach { plugin.server.pluginManager.registerEvents(it, plugin) }
-        }
+            if (!eventsRegistered) {
+                this.registerFeature(
+                    PlantGrowthFeature,
+                    SeasonalChunkSyncFeature,
+                    SeasonalMeltingFeature,
+                    SeasonalDaylightFeature,
+                    SeasonalWeatherFeature,
+                    SnowAccumulationFeature,
+                    WaterFreezingFeature,
+                    DynamicForestFeature
+                )
+                featureListeners.forEach { plugin.server.pluginManager.registerEvents(it, plugin) }
+                eventsRegistered = true
+            }
 
-        else {
-            plugin.logger.warning("WARNING! This plugin currently only makes visual changes. To enable core gameplay mechanics (grass growth, complete tree overhaul, river freezing and snow in winter, etc.), go to /plugins/wilderness/gameplay.yml and enable \"enableWorldModifications.\"")
+            // Мгновенный запуск всех задач генерации/роста/таяния в рантайме
+            startAllTasks()
+        } else {
+            plugin.logger.warning("WARNING! World modifications are disabled. Run /vxs activate modifications to enable them.")
         }
+    }
 
+    fun startAllTasks() {
+        if (!config.general.enableWorldModifications) return
+
+        PlantGrowthFeature.start()
+        SeasonalMeltingFeature.start()
+        SeasonalDaylightFeature.start()
+        SnowAccumulationFeature.start()
+        WaterFreezingFeature.start()
+
+        if (config.dynamicForest.enabled) {
+            DynamicForestFeature.start()
+        }
+    }
+
+    fun stopAllTasks() {
+        PlantGrowthFeature.stop()
+        SeasonalMeltingFeature.stop()
+        SeasonalDaylightFeature.stop()
+        SnowAccumulationFeature.stop()
+        WaterFreezingFeature.stop()
+        DynamicForestFeature.stop()
     }
 
     fun registerFeature(vararg listeners: Listener) {
@@ -44,17 +77,15 @@ class GameplayManager(val plugin: SeasonsPlugin) : Listener {
     @EventHandler
     fun onFirstWorldLoad(event: WorldLoadEvent) {
         val worldName = event.world.name
-        if (worldName == allowedWorlds.first()) {
+        if (worldName == allowedWorlds.firstOrNull()) {
             this.registerFeatures()
         }
     }
 
-    // Если какая-то фича захочет перезагрузить конфиг — просто вызывай GameplayManager.reload()
     fun reload() {
-        // TODO: перезагрузка конфига + перерегистрация если нужно (пока не требуется)
+        stopAllTasks()
+        registerFeatures()
     }
-
-    private val featureListeners = mutableListOf<Listener>()
 
     init {
         plugin.gameplayManager = this

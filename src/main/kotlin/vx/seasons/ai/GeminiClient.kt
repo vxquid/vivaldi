@@ -16,13 +16,15 @@ import java.net.Proxy
 import java.util.concurrent.TimeUnit
 import kotlin.reflect.KClass
 
-class CerebrasClient(
-    private val keyManager: KeyManager,
+class GeminiClient(
     private val config: ProviderConfiguration
 ) : AIClient {
 
+    private val keyManager = KeyManager(
+        config.apiKey.split(",").map { it.trim() }.filter { it.isNotBlank() }
+    )
 
-    private val baseUrl: String = "https://api.cerebras.ai/v1/chat/completions"
+    private val baseUrl: String = "https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key="
 
     class KeyManager(keys: List<String>) {
         data class Key(val key: String, var requestCounter: Int = 0, var quota: Boolean = false)
@@ -50,15 +52,18 @@ class CerebrasClient(
             .build()
     }
 
-    private val client = OkHttpClient.Builder().readTimeout(30, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).apply {
-        if (proxyHost != "PROXY_HOST") {
-            plugin.logger.info("Proxy usage in config.yml detected. Using proxy for requests.")
-            proxy(proxy).proxyAuthenticator(proxyAuthenticator)
-        }
-    }.build()
+    private val client = OkHttpClient.Builder()
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .apply {
+            if (proxyHost != "PROXY_HOST") {
+                plugin.logger.info("Proxy usage in provider.yml detected. Using proxy for Gemini requests.")
+                proxy(proxy).proxyAuthenticator(proxyAuthenticator)
+            }
+        }.build()
 
     private val lang  = config.language
-    private val rules = "[Rules: `You must use $lang language in generated content.`, `Generate content in ${config.setting} setting.`, `Use ${config.namingStyle} naming style.`] "
+    private val rules = "[Rules: `Use $lang language.`, `Generate content in ${config.setting} setting.`, `Use ${config.namingStyle} naming style.`] "
     private val temp  = config.temperature
 
     override fun <T : Any> sendPromptWithSchema(
@@ -67,8 +72,7 @@ class CerebrasClient(
     ): T? = try {
         val fullPrompt =
             "$rules$prompt\n\nReturn the response as a JSON object strictly adhering to the schema described in the prompt. Ensure the response is valid JSON enclosed in curly braces {} and contains only the fields specified in the schema. Do NOT include code fences (```json```)"
-        // Cerebras также поддерживает json_mode, передаем true в sendRequestWithRetry
-        sendRequestWithRetry(fullPrompt, targetClass, config.maxRetries, jsonMode = true)
+        sendRequestWithRetry(fullPrompt, targetClass, config.maxRetries)
     } catch (_: Exception) {
         null
     }
@@ -100,8 +104,7 @@ class CerebrasClient(
     private fun <T : Any> sendRequestWithRetry(
         prompt: String,
         responseType: KClass<T>,
-        retries: Int,
-        jsonMode: Boolean
+        retries: Int
     ): T? {
 
         if (retries <= 0) {
@@ -116,21 +119,14 @@ class CerebrasClient(
 
         val parser = AdvancedJsonParser()
         val escapedPrompt = parser.escapeJsonString(prompt)
-        // Для Cerebras и OpenAI формат сообщений отличается от Gemini
-        val requestBodyJson = parser.createJsonRequest(escapedPrompt, jsonMode)
+        val requestBodyJson = parser.createJsonRequest(escapedPrompt, "application/json")
         val requestBody = requestBodyJson.toRequestBody("application/json".toMediaTypeOrNull())
-        
-        // В Cerebras ключ передается в хедере Authorization
-        val request = Request.Builder()
-            .url(baseUrl)
-            .addHeader("Authorization", "Bearer ${key.key}")
-            .post(requestBody)
-            .build()
+        val request = Request.Builder().url("$baseUrl${key.key}").post(requestBody).build()
 
         return client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 handleFailedResponse(response, key)
-                return sendRequestWithRetry(prompt, responseType, retries - 1, jsonMode)
+                return sendRequestWithRetry(prompt, responseType, retries - 1)
             }
             val content = response.body?.string() ?: run {
                 return null
@@ -138,7 +134,7 @@ class CerebrasClient(
             try {
                 parser.parseResponse(content, responseType.java)
             } catch (_: JsonParseException) {
-                sendRequestWithRetry(prompt, responseType, retries - 1, jsonMode)
+                sendRequestWithRetry(prompt, responseType, retries - 1)
             } catch (_: Exception) {
                 null
             }
@@ -162,14 +158,9 @@ class CerebrasClient(
 
         val parser = AdvancedJsonParser()
         val escapedPrompt = parser.escapeJsonString(prompt)
-        val requestBodyJson = parser.createJsonRequest(escapedPrompt, false) // jsonMode = false для перевода
+        val requestBodyJson = parser.createJsonRequest(escapedPrompt, "text/plain")
         val requestBody = requestBodyJson.toRequestBody("application/json".toMediaTypeOrNull())
-
-        val request = Request.Builder()
-            .url(baseUrl)
-            .addHeader("Authorization", "Bearer ${key.key}")
-            .post(requestBody)
-            .build()
+        val request = Request.Builder().url("$baseUrl${key.key}").post(requestBody).build()
 
         return client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
@@ -197,15 +188,15 @@ class CerebrasClient(
 
         fun <T : Any> parseResponse(content: String, responseType: Class<T>): T {
             val jsonResponse = gson.fromJson(content, JsonObject::class.java)
-            
-            // Структура ответа Cerebras/OpenAI: choices[0].message.content
             var cleanedContent = jsonResponse
-                .getAsJsonArray("choices")
+                .getAsJsonArray("candidates")
                 ?.get(0)?.asJsonObject
-                ?.getAsJsonObject("message")
-                ?.get("content")?.asString
+                ?.getAsJsonObject("content")
+                ?.getAsJsonArray("parts")
+                ?.get(0)?.asJsonObject
+                ?.get("text")?.asString
                 ?.let { cleanJson(it) }
-                ?: throw JsonParseException("Failed to extract JSON content from Cerebras response!")
+                ?: throw JsonParseException("Failed to extract JSON content from response!")
 
             cleanedContent = repairJson(cleanedContent)
 
@@ -217,11 +208,13 @@ class CerebrasClient(
         fun extractTextFromResponse(content: String): String {
             val jsonResponse = gson.fromJson(content, JsonObject::class.java)
             return jsonResponse
-                .getAsJsonArray("choices")
+                .getAsJsonArray("candidates")
                 ?.get(0)?.asJsonObject
-                ?.getAsJsonObject("message")
-                ?.get("content")?.asString
-                ?: throw JsonParseException("Failed to extract text from Cerebras response!")
+                ?.getAsJsonObject("content")
+                ?.getAsJsonArray("parts")
+                ?.get(0)?.asJsonObject
+                ?.get("text")?.asString
+                ?: throw JsonParseException("Failed to extract text from response!")
         }
 
         fun findYaml(yaml: String): String {
@@ -248,28 +241,28 @@ class CerebrasClient(
             input.replace(Regex("""\\+n"""), "\n")
                 .replace(Regex("""\\+""""), "\"")
 
-        // Формирование запроса под формат OpenAI/Cerebras
-        fun createJsonRequest(prompt: String, jsonMode: Boolean): String {
-            val responseFormat = if (jsonMode) """, "response_format": { "type": "json_object" }""" else ""
-            
-            return """{
-                "model": "${config.model}",
-                "messages":[{
-                    "role": "user",
-                    "content": "$prompt"
+        fun createJsonRequest(prompt: String, mimeType: String = "application/json"): String =
+            """{
+                "contents": [{
+                    "parts": [{
+                        "text": "$prompt"
+                    }]
                 }],
-                "temperature": $temp
-                $responseFormat
+                "safetySettings": [{
+                    "category": "7",
+                    "threshold": "4"
+                }],
+                "generationConfig": {
+                    "responseMimeType": "$mimeType",
+                    "temperature": $temp
+                }
             }""".trimIndent()
-        }
 
         private fun repairJson(jsonStr: String): String {
             var repaired = jsonStr.trim()
 
-            // Remove trailing commas
             repaired = repaired.replace(Regex(",\\s*([}\\]])"), "$1")
 
-            // Balance braces if unbalanced
             val openBraces = repaired.count { it == '{' }
             val closeBraces = repaired.count { it == '}' }
             if (openBraces > closeBraces) {
@@ -278,13 +271,11 @@ class CerebrasClient(
                 repaired = "{".repeat(closeBraces - openBraces) + repaired
             }
 
-            // Balance quotes (simple: ensure even number)
             val quoteCount = repaired.count { it == '"' }
             if (quoteCount % 2 != 0) {
                 repaired += "\""
             }
 
-            // Strip non-JSON prefix/suffix (find first { to last })
             val start = repaired.indexOf('{').takeIf { it >= 0 } ?: 0
             val end = repaired.lastIndexOf('}').takeIf { it >= 0 } ?: repaired.length
             repaired = repaired.substring(start, end + 1)
@@ -299,14 +290,12 @@ class CerebrasClient(
     }
 
     private fun handleFailedResponse(response: Response, key: KeyManager.Key) {
-        val body = response.body?.string()?.lowercase() ?: ""
-        // Cerebras возвращает 429 для Rate Limit
-        if (response.code == 429 || body.contains("quota") || body.contains("rate limit")) {
-            key.quota = true
-            plugin.logger.info("Cerebras Quota/Rate Limit exceeded. Resetting key in 5 seconds.")
-            plugin.server.scheduler.runTaskLater(plugin, { _ -> key.quota = false }, 5 * 20)
-        } else {
-            plugin.logger.warning("Cerebras Request Failed: ${response.code} - $body")
+        response.body?.string()?.let { reason ->
+            if (reason.lowercase().contains("quota")) {
+                key.quota = true
+                plugin.logger.info("Quota exceeded. Resetting key in 60 seconds.")
+                plugin.server.scheduler.runTaskLater(plugin, Runnable { key.quota = false }, 60 * 20L)
+            }
         }
     }
 }
