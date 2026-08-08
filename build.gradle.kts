@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "seasons"
-version = "1.1.1"
+version = "1.2.0"
 description = "Feel the rhythm of nature through dynamic seasonal cycles."
 
 bukkitPluginYaml {
@@ -18,7 +18,7 @@ bukkitPluginYaml {
     load = BukkitPluginYaml.PluginLoadOrder.STARTUP
     depend = listOf("packetevents")
     authors.add("vxquid")
-    apiVersion = "26.1"
+    apiVersion = "26.2"
 }
 
 repositories {
@@ -32,7 +32,7 @@ repositories {
 }
 
 dependencies {
-    paperweight.paperDevBundle("26.1.2.build.+")
+    paperweight.paperDevBundle("26.2.build.+")
     implementation(kotlin("stdlib"))
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0")
